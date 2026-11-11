@@ -11,5 +11,6 @@ export const promptGuidelines = [
 	"Put the evidence for the decision in ask_user's `context` field and keep `question` to one sentence; offer 2-5 concrete options with the trade-off in each `description`.",
 	"Use ask_user with `questions` only for 2-4 decisions that are independent and whose prerequisites are settled; anything that depends on another answer belongs in a later call.",
 	"Set `allowMultiple: true` only when picking several options is a valid answer (for example choosing which features to include); otherwise leave it off.",
+	"Only set ask_user's `timeout` for unattended runs where the user may not be present; on timeout, continue with your best judgment instead of re-asking.",
 	"After ask_user returns, proceed with the chosen answer without asking again; if the user cancelled, do not re-ask the same question.",
 ];

@@ -64,6 +64,14 @@ export const askUserParameters = Type.Object({
 			description: "Offer an 'Other' free-text answer next to the options (default: true).",
 		}),
 	),
+	timeout: Type.Optional(
+		Type.Integer({
+			minimum: 1000,
+			maximum: 600000,
+			description:
+				"Auto-dismiss the prompt after this many milliseconds without an answer and return a timeout. Only use when the user may be away.",
+		}),
+	),
 	questions: Type.Optional(
 		Type.Array(QuestionSchema, {
 			maxItems: MAX_QUESTIONS,
@@ -143,10 +151,16 @@ export function normalizeParams(params: AskUserParams): AskRequest {
 	const heading = clean(params.question);
 	const rawQuestions = params.questions ?? [];
 
+	const timeout =
+		typeof params.timeout === "number" && Number.isFinite(params.timeout)
+			? Math.min(600_000, Math.max(1000, Math.round(params.timeout)))
+			: undefined;
+
 	if (rawQuestions.length > 0) {
 		const questions = rawQuestions.map((raw, i) => normalizeQuestion(raw, i, rawQuestions.length > 1));
 		return {
 			...(heading ? { heading } : {}),
+			...(timeout ? { timeout } : {}),
 			questions,
 		};
 	}
@@ -167,5 +181,5 @@ export function normalizeParams(params: AskUserParams): AskRequest {
 		false,
 	);
 
-	return { questions: [single] };
+	return { ...(timeout ? { timeout } : {}), questions: [single] };
 }

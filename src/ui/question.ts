@@ -3,6 +3,7 @@ import {
 	Editor,
 	type EditorTheme,
 	type Focusable,
+	Input,
 	Key,
 	matchesKey,
 	visibleWidth,
@@ -12,6 +13,7 @@ import {
 import type { AskConfig, AskOutcome, AskRequest, AskResponse } from "../types.js";
 
 const MAX_CONTEXT_LINES = 8;
+const FILTER_HINT_THRESHOLD = 6;
 
 const CHECKED = "[x]";
 const UNCHECKED = "[ ]";
@@ -22,6 +24,7 @@ const UNCHECKED = "[ ]";
  * Single question: options list with an inline editor for free text.
  * Batch: one page per question plus a review page, navigated with tab/arrows.
  * Multi-select: space toggles, Enter submits the checked set.
+ * `/` filters the option list in place; `timeout` auto-dismisses the prompt.
  */
 export async function askInTui(
 	request: AskRequest,
@@ -31,8 +34,9 @@ export async function askInTui(
 	const questions = request.questions;
 	const isBatch = questions.length > 1;
 	const reviewTab = questions.length;
+	const nullResponses = () => questions.map(() => null);
 
-	if (signal?.aborted) return { responses: questions.map(() => null), cancelled: true };
+	if (signal?.aborted) return { responses: nullResponses(), cancelled: true };
 
 	return ctx.ui.custom<AskOutcome>(
 		(tui, theme, _keybindings, done) => {
@@ -40,12 +44,17 @@ export async function askInTui(
 			let optionIndex = 0;
 			let editMode = questions[0]?.options.length === 0;
 			let editTarget: number | null = editMode ? 0 : null;
+			let filter = "";
+			let filterMode = false;
+			let lastFilterValue = "";
 			let validationHint: string | null = null;
 			let submitWarned = false;
 			let focused = true;
 			let finished = false;
 			let cachedWidth: number | undefined;
 			let cachedLines: string[] | undefined;
+			let deadline: number | undefined = request.timeout ? Date.now() + request.timeout : undefined;
+			let timer: ReturnType<typeof setInterval> | undefined;
 
 			const checked = questions.map(() => new Set<number>());
 			const freeText = new Map<number, string>();
@@ -53,6 +62,10 @@ export async function askInTui(
 
 			function detach() {
 				signal?.removeEventListener("abort", onAbort);
+				if (timer) {
+					clearInterval(timer);
+					timer = undefined;
+				}
 			}
 
 			function finish(outcome: AskOutcome) {
@@ -67,7 +80,7 @@ export async function askInTui(
 			}
 
 			function cancel() {
-				finish({ responses: questions.map(() => null), cancelled: true });
+				finish({ responses: nullResponses(), cancelled: true });
 			}
 
 			function submit() {
@@ -85,8 +98,34 @@ export async function askInTui(
 				},
 			};
 			const editor = new Editor(tui, editorTheme);
+			const filterInput = new Input({ placeholder: "Filter options…" });
+
+			filterInput.onSubmit = () => {
+				filter = filterInput.getValue().trim();
+				filterMode = false;
+				optionIndex = 0;
+				refresh();
+			};
+			filterInput.onEscape = () => {
+				filter = "";
+				filterMode = false;
+				filterInput.setValue("");
+				lastFilterValue = "";
+				optionIndex = 0;
+				refresh();
+			};
 
 			signal?.addEventListener("abort", onAbort);
+
+			if (deadline) {
+				timer = setInterval(() => {
+					if (deadline && Date.now() >= deadline) {
+						finish({ responses: nullResponses(), cancelled: true, timedOut: true });
+						return;
+					}
+					refresh();
+				}, 200);
+			}
 
 			function invalidate() {
 				cachedWidth = undefined;
@@ -102,12 +141,25 @@ export async function askInTui(
 				return questions[index];
 			}
 
-			function freeformIndex(question: AskConfig): number {
-				return question.allowFreeform ? question.options.length : -1;
+			function activeFilter(): string {
+				return (filterMode ? filterInput.getValue() : filter).trim();
 			}
 
-			function rowCount(question: AskConfig): number {
-				return question.options.length + (question.allowFreeform ? 1 : 0);
+			function visibleOptions(question: AskConfig): number[] {
+				const needle = activeFilter().toLowerCase();
+				if (!needle) return question.options.map((_, i) => i);
+				const terms = needle.split(/\s+/).filter(Boolean);
+				return question.options
+					.map((option, i) => ({ option, i }))
+					.filter(({ option }) => {
+						const haystack = `${option.label} ${option.description ?? ""}`.toLowerCase();
+						return terms.every((term) => haystack.includes(term));
+					})
+					.map(({ i }) => i);
+			}
+
+			function freeformIndex(question: AskConfig): number {
+				return question.allowFreeform ? question.options.length : -1;
 			}
 
 			function isReview(): boolean {
@@ -120,6 +172,20 @@ export async function askInTui(
 
 			function unansweredCount(): number {
 				return responses.filter((response) => response === null).length;
+			}
+
+			function resetFilter() {
+				filter = "";
+				filterMode = false;
+				lastFilterValue = "";
+				filterInput.setValue("");
+			}
+
+			function openFilter() {
+				filterMode = true;
+				lastFilterValue = filter;
+				filterInput.setValue(filter);
+				refresh();
 			}
 
 			function openEditor(index: number) {
@@ -141,6 +207,7 @@ export async function askInTui(
 				currentTab = index;
 				optionIndex = 0;
 				validationHint = null;
+				resetFilter();
 				const question = questionAt(index);
 				if (question && question.options.length === 0) {
 					openEditor(index);
@@ -180,12 +247,7 @@ export async function askInTui(
 
 			function pickSingle(index: number, option: number) {
 				const question = questionAt(index);
-				if (!question) return;
-				if (option === freeformIndex(question)) {
-					openEditor(index);
-					return;
-				}
-				const choice = question.options[option];
+				const choice = question?.options[option];
 				if (!choice) return;
 				record(index, { kind: "selection", labels: [choice.label], indexes: [option + 1] });
 				advance(index);
@@ -261,6 +323,17 @@ export async function askInTui(
 					return;
 				}
 
+				if (filterMode) {
+					filterInput.handleInput(data);
+					const value = filterInput.getValue();
+					if (value !== lastFilterValue) {
+						lastFilterValue = value;
+						optionIndex = 0;
+					}
+					refresh();
+					return;
+				}
+
 				if (isReview()) {
 					if (matchesKey(data, Key.enter)) {
 						if (!allAnswered() && !submitWarned) {
@@ -292,7 +365,9 @@ export async function askInTui(
 
 				const question = questionAt(currentTab);
 				if (!question) return;
-				const rows = rowCount(question);
+				const visible = visibleOptions(question);
+				const freeform = freeformIndex(question);
+				const rows = visible.length + (question.allowFreeform ? 1 : 0);
 
 				if (isBatch) {
 					if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
@@ -303,6 +378,11 @@ export async function askInTui(
 						nextTab(-1);
 						return;
 					}
+				}
+
+				if (data === "/" && question.options.length > 0) {
+					openFilter();
+					return;
 				}
 
 				if (matchesKey(data, Key.up)) {
@@ -316,7 +396,7 @@ export async function askInTui(
 					return;
 				}
 
-				const onFreeform = optionIndex === freeformIndex(question);
+				const onFreeform = question.allowFreeform && optionIndex === visible.length;
 
 				if (onFreeform && matchesKey(data, Key.space)) {
 					openEditor(currentTab);
@@ -329,31 +409,42 @@ export async function askInTui(
 					return;
 				}
 
+				const original = visible[optionIndex];
+
 				if (matchesKey(data, Key.space)) {
-					if (question.allowMultiple) toggle(currentTab, optionIndex);
+					if (question.allowMultiple && original !== undefined) toggle(currentTab, original);
 					return;
 				}
 
 				if (matchesKey(data, Key.enter)) {
-					if (question.allowMultiple) commitMultiple(currentTab);
-					else pickSingle(currentTab, optionIndex);
+					if (question.allowMultiple) {
+						commitMultiple(currentTab);
+					} else if (original !== undefined) {
+						pickSingle(currentTab, original);
+					}
 					return;
 				}
 
 				if (matchesKey(data, Key.escape)) {
+					if (filter) {
+						resetFilter();
+						optionIndex = 0;
+						refresh();
+						return;
+					}
 					cancel();
 					return;
 				}
 
-				// Digit quick-pick: single-select picks, multi-select toggles, the free-form digit opens the editor.
+				// Digit quick-pick uses the original option numbers shown in the list.
 				if (/^[1-9]$/.test(data)) {
-					const index = Number(data) - 1;
-					if (index < question.options.length) {
-						if (question.allowMultiple) toggle(currentTab, index);
-						else pickSingle(currentTab, index);
-					} else if (index === freeformIndex(question)) {
-						optionIndex = index;
+					const target = Number(data) - 1;
+					if (target === freeform) {
+						optionIndex = visible.length;
 						openEditor(currentTab);
+					} else if (target >= 0 && target < question.options.length && visible.includes(target)) {
+						if (question.allowMultiple) toggle(currentTab, target);
+						else pickSingle(currentTab, target);
 					}
 				}
 			}
@@ -460,31 +551,52 @@ export async function askInTui(
 				pushWrapped(theme.bold(theme.fg("text", question.question)));
 				lines.push("");
 
+				const visible = visibleOptions(question);
 				const set = checked[currentTab] ?? new Set<number>();
-				question.options.forEach((option, i) => {
-					const highlighted = !editMode && i === optionIndex;
+
+				if (visible.length === 0) {
+					pushPrefixed("  ", theme.fg("warning", `No options match "${activeFilter()}"`));
+				}
+
+				visible.forEach((original, position) => {
+					const option = question.options[original];
+					if (!option) return;
+					const highlighted = !editMode && position === optionIndex;
 					const prefix = highlighted ? theme.fg("accent", "> ") : "  ";
-					const box = question.allowMultiple ? `${set.has(i) ? CHECKED : UNCHECKED} ` : "";
-					const color = highlighted || set.has(i) ? "accent" : "text";
-					pushPrefixed(prefix, theme.fg(color, `${box}${i + 1}. ${option.label}`));
+					const box = question.allowMultiple ? `${set.has(original) ? CHECKED : UNCHECKED} ` : "";
+					const color = highlighted || set.has(original) ? "accent" : "text";
+					pushPrefixed(prefix, theme.fg(color, `${box}${original + 1}. ${option.label}`));
 					if (option.description) {
 						pushPrefixed("       ", theme.fg("muted", option.description));
 					}
 				});
 
 				if (question.allowFreeform && question.options.length > 0) {
-					const index = freeformIndex(question);
-					const highlighted = editMode || optionIndex === index;
+					const highlighted = editMode || optionIndex === visible.length;
 					const prefix = highlighted ? theme.fg("accent", "> ") : "  ";
 					const hasText = freeText.has(currentTab);
 					const box = question.allowMultiple ? `${hasText ? CHECKED : UNCHECKED} ` : "";
 					const marker = editMode ? " ✎" : "";
+					const number = question.options.length + 1;
 					pushPrefixed(
 						prefix,
-						theme.fg(highlighted || hasText ? "accent" : "text", `${box}${index + 1}. Type something.${marker}`),
+						theme.fg(
+							highlighted || hasText ? "accent" : "text",
+							`${box}${number}. Type something.${marker}`,
+						),
 					);
 					const written = freeText.get(currentTab);
 					if (written) pushPrefixed("       ", theme.fg("muted", written));
+				}
+
+				if (filterMode) {
+					lines.push("");
+					for (const line of filterInput.render(Math.max(1, width - 2))) {
+						lines.push(` ${line}`);
+					}
+				} else if (filter) {
+					lines.push("");
+					pushPrefixed(" ", theme.fg("muted", `Filter: ${filter}`));
 				}
 
 				if (editMode) {
@@ -498,6 +610,12 @@ export async function askInTui(
 				return lines;
 			}
 
+			function timeoutHint(): string {
+				if (!deadline) return "";
+				const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+				return ` • ⏱ ${seconds}s`;
+			}
+
 			function render(width: number): string[] {
 				if (cachedLines && cachedWidth === width) return cachedLines;
 
@@ -505,6 +623,7 @@ export async function askInTui(
 				const lines: string[] = [];
 
 				editor.focused = focused && editMode;
+				filterInput.focused = focused && filterMode;
 
 				lines.push(theme.fg("accent", "─".repeat(w)));
 
@@ -525,22 +644,27 @@ export async function askInTui(
 				}
 
 				lines.push("");
+				const question = questionAt(currentTab);
 				const batchHint = isBatch ? "tab/←→ switch • " : "";
+				const filterHint =
+					question && question.options.length >= FILTER_HINT_THRESHOLD ? " • / to filter" : "";
 				let hint: string;
 				if (editMode) {
 					hint = "Enter to submit • Esc to go back";
+				} else if (filterMode) {
+					hint = "Type to filter • Enter to apply • Esc to clear";
 				} else if (isReview()) {
 					hint = `Enter to submit • 1-${questions.length} jump to a question • Esc to cancel`;
-				} else if (questionAt(currentTab)?.allowMultiple) {
-					hint = `${batchHint}space toggles • ↑↓ move • 1-9 toggle • Enter to submit • Esc to cancel`;
+				} else if (question?.allowMultiple) {
+					hint = `${batchHint}space toggles • ↑↓ move • 1-9 toggle • Enter to submit • Esc to cancel${filterHint}`;
 				} else {
-					hint = `${batchHint}↑↓ move • 1-9 quick pick • Enter to select • Esc to cancel`;
+					hint = `${batchHint}↑↓ move • 1-9 quick pick • Enter to select • Esc to cancel${filterHint}`;
 				}
 
 				if (validationHint) {
 					lines.push(...wrapTextWithAnsi(` ${theme.fg("warning", validationHint)}`, w));
 				}
-				lines.push(...wrapTextWithAnsi(` ${theme.fg("dim", hint)}`, w));
+				lines.push(...wrapTextWithAnsi(` ${theme.fg("dim", hint)}${theme.fg("dim", timeoutHint())}`, w));
 				lines.push(theme.fg("accent", "─".repeat(w)));
 
 				cachedWidth = width;

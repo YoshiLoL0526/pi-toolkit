@@ -6,11 +6,18 @@ export const CANCELLED_TEXT =
 export const CANCELLED_BATCH_TEXT =
 	"User cancelled the questions before submitting. Do not re-ask the same questions: continue with your best judgment, or ask in plain text at the end of your turn.";
 
+export const TIMEOUT_TEXT =
+	"The question timed out without an answer. Do not re-ask it immediately: continue with your best judgment, or ask in plain text at the end of your turn.";
+
 export const HEADLESS_TEXT =
 	"There is no interactive UI in this mode, so the user was not asked. Ask the question in plain text in your final message and end your turn.";
 
-export function emptyOutcome(request: AskRequest): AskOutcome {
-	return { responses: request.questions.map(() => null), cancelled: true };
+export function emptyOutcome(request: AskRequest, timedOut = false): AskOutcome {
+	return {
+		responses: request.questions.map(() => null),
+		cancelled: true,
+		...(timedOut ? { timedOut: true } : {}),
+	};
 }
 
 /** Compact human/model readable answer used by the review page and renderers. */
@@ -41,6 +48,9 @@ export function formatResponse(response: AskResponse): string {
 }
 
 export function formatOutcome(request: AskRequest, outcome: AskOutcome): string {
+	if (outcome.timedOut) {
+		return TIMEOUT_TEXT;
+	}
 	if (outcome.cancelled) {
 		return request.questions.length > 1 ? CANCELLED_BATCH_TEXT : CANCELLED_TEXT;
 	}
@@ -74,6 +84,7 @@ export function toDetails(request: AskRequest, outcome: AskOutcome): AskDetails 
 			})),
 			answers: outcome.responses,
 			cancelled: outcome.cancelled,
+			...(outcome.timedOut ? { timedOut: true } : {}),
 		};
 	}
 
@@ -87,5 +98,6 @@ export function toDetails(request: AskRequest, outcome: AskOutcome): AskDetails 
 		allowFreeform: question.allowFreeform,
 		response: outcome.responses[0] ?? null,
 		cancelled: outcome.cancelled,
+		...(outcome.timedOut ? { timedOut: true } : {}),
 	};
 }

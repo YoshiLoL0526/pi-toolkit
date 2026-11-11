@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
 import type { AskConfig, AskOutcome, AskRequest, AskResponse } from "../types.js";
 
 /**
@@ -7,24 +7,38 @@ import type { AskConfig, AskOutcome, AskRequest, AskResponse } from "../types.js
  *
  * Multi-select degrades to a loop: pick an option to toggle it, then "Done".
  * A batch is asked sequentially and has no review page; cancelling any
- * question cancels the whole batch.
+ * question cancels the whole batch. A `timeout` is one deadline for the whole
+ * call, passed down to each dialog as its remaining time.
  */
 export async function askWithDialogs(
 	request: AskRequest,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
 ): Promise<AskOutcome> {
+	const nullResponses = () => request.questions.map(() => null);
+	const deadline = request.timeout ? Date.now() + request.timeout : undefined;
+	const expired = () => deadline !== undefined && Date.now() >= deadline;
+
 	const responses: (AskResponse | null)[] = [];
 
 	for (const question of request.questions) {
-		const response = await askOne(question, ctx, signal);
+		if (signal?.aborted || expired()) {
+			return { responses: nullResponses(), cancelled: true, ...(expired() ? { timedOut: true } : {}) };
+		}
+		const response = await askOne(question, ctx, signal, deadline);
 		if (!response) {
-			return { responses: request.questions.map(() => null), cancelled: true };
+			return { responses: nullResponses(), cancelled: true, ...(expired() ? { timedOut: true } : {}) };
 		}
 		responses.push(response);
 	}
 
 	return { responses, cancelled: false };
+}
+
+function dialogOptions(signal: AbortSignal | undefined, deadline: number | undefined): ExtensionUIDialogOptions {
+	const options: ExtensionUIDialogOptions = signal ? { signal } : {};
+	if (deadline) options.timeout = Math.max(1, deadline - Date.now());
+	return options;
 }
 
 function dialogTitle(question: AskConfig): string {
@@ -34,30 +48,35 @@ function dialogTitle(question: AskConfig): string {
 async function askOne(
 	question: AskConfig,
 	ctx: ExtensionContext,
-	signal?: AbortSignal,
+	signal: AbortSignal | undefined,
+	deadline: number | undefined,
 ): Promise<AskResponse | null> {
 	if (signal?.aborted) return null;
 
 	if (question.options.length === 0) {
-		const text = await ctx.ui.input(question.question, question.context ?? "Type your answer", { signal });
+		const text = await ctx.ui.input(
+			question.question,
+			question.context ?? "Type your answer",
+			dialogOptions(signal, deadline),
+		);
 		const trimmed = text?.trim();
 		return trimmed ? { kind: "freeform", text: trimmed } : null;
 	}
 
 	if (question.allowMultiple) {
-		return askMultiple(question, ctx, signal);
+		return askMultiple(question, ctx, signal, deadline);
 	}
 
 	const labels = question.options.map((option, i) => `${i + 1}. ${option.label}`);
 	const choices = question.allowFreeform ? [...labels, "Other (type your own)"] : labels;
-	const picked = await ctx.ui.select(dialogTitle(question), choices, { signal });
+	const picked = await ctx.ui.select(dialogTitle(question), choices, dialogOptions(signal, deadline));
 	if (picked === undefined) return null;
 
 	const index = choices.indexOf(picked);
 	if (index < 0) return null;
 
 	if (question.allowFreeform && index === labels.length) {
-		return inputAnswer(question, ctx, signal);
+		return inputAnswer(question, ctx, signal, deadline);
 	}
 
 	const option = question.options[index];
@@ -68,9 +87,10 @@ async function askOne(
 async function inputAnswer(
 	question: AskConfig,
 	ctx: ExtensionContext,
-	signal?: AbortSignal,
+	signal: AbortSignal | undefined,
+	deadline: number | undefined,
 ): Promise<AskResponse | null> {
-	const text = await ctx.ui.input("Your answer", question.context ?? "", { signal });
+	const text = await ctx.ui.input("Your answer", question.context ?? "", dialogOptions(signal, deadline));
 	const trimmed = text?.trim();
 	return trimmed ? { kind: "freeform", text: trimmed } : null;
 }
@@ -78,12 +98,13 @@ async function inputAnswer(
 async function askMultiple(
 	question: AskConfig,
 	ctx: ExtensionContext,
-	signal?: AbortSignal,
+	signal: AbortSignal | undefined,
+	deadline: number | undefined,
 ): Promise<AskResponse | null> {
 	const chosen = new Set<number>();
 	let text: string | undefined;
 
-	while (!signal?.aborted) {
+	while (!signal?.aborted && !(deadline !== undefined && Date.now() >= deadline)) {
 		const labels = question.options.map(
 			(option, i) => `${chosen.has(i) ? "✓ " : ""}${i + 1}. ${option.label}`,
 		);
@@ -94,7 +115,11 @@ async function askMultiple(
 
 		const status =
 			chosen.size > 0 || text ? "Toggle options, then choose Done." : "Select one or more options.";
-		const picked = await ctx.ui.select(`${dialogTitle(question)}\n\n${status}`, choices, { signal });
+		const picked = await ctx.ui.select(
+			`${dialogTitle(question)}\n\n${status}`,
+			choices,
+			dialogOptions(signal, deadline),
+		);
 		if (picked === undefined) return null;
 
 		const index = choices.indexOf(picked);
@@ -107,7 +132,7 @@ async function askMultiple(
 		}
 
 		if (index === otherIndex) {
-			const written = await ctx.ui.input("Your answer", question.context ?? "", { signal });
+			const written = await ctx.ui.input("Your answer", question.context ?? "", dialogOptions(signal, deadline));
 			if (written === undefined) return null;
 			if (written.trim()) text = written.trim();
 			continue;

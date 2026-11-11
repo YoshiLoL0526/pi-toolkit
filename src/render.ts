@@ -68,6 +68,9 @@ export function renderResult(
 	}
 
 	if (details.kind === "batch") {
+		if (details.timedOut) {
+			return new Text(theme.fg("warning", "Timed out — no answers"), 0, 0);
+		}
 		if (details.cancelled) {
 			return new Text(theme.fg("warning", "Cancelled — no answers"), 0, 0);
 		}
@@ -79,6 +82,9 @@ export function renderResult(
 		return new Text(lines.join("\n"), 0, 0);
 	}
 
+	if (details.timedOut) {
+		return new Text(theme.fg("warning", "Timed out — no answer"), 0, 0);
+	}
 	if (details.cancelled || !details.response) {
 		return new Text(theme.fg("warning", "Cancelled — no answer"), 0, 0);
 	}

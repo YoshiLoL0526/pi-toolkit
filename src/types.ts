@@ -19,6 +19,8 @@ export interface AskConfig {
 /** One tool call: a single question or a batch of independent ones. */
 export interface AskRequest {
 	heading?: string;
+	/** Auto-dismiss after this many milliseconds without an answer. */
+	timeout?: number;
 	questions: AskConfig[];
 }
 
@@ -31,6 +33,7 @@ export interface AskOutcome {
 	/** Index-aligned with the request questions; null means unanswered. */
 	responses: (AskResponse | null)[];
 	cancelled: boolean;
+	timedOut?: boolean;
 }
 
 /** Persisted in the tool result. `kind` was added in v2; v1 stored single details without it. */
@@ -44,6 +47,7 @@ export type AskDetails =
 			allowFreeform: boolean;
 			response: AskResponse | null;
 			cancelled: boolean;
+			timedOut?: boolean;
 	  }
 	| {
 			kind: "batch";
@@ -58,4 +62,5 @@ export type AskDetails =
 			}>;
 			answers: (AskResponse | null)[];
 			cancelled: boolean;
+			timedOut?: boolean;
 	  };

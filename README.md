@@ -33,6 +33,7 @@ Name: `ask_user`.
 | `options` | `{ label, description? }[]?` | `[]` | 2-5 concrete choices. Omit for an open-ended question |
 | `allowMultiple` | `boolean?` | `false` | Let the user pick several options |
 | `allowFreeform` | `boolean?` | `true` | Adds a "Type something." row next to the options |
+| `timeout` | `number?` | — | Auto-dismiss after N ms (1000-600000) without an answer; reported as a timeout |
 
 ### Batch of questions
 
@@ -74,10 +75,13 @@ A cancelled prompt returns `User dismissed the question without answering...` pl
 | `space` | Multi-select: toggle the highlighted option |
 | `enter` | Select, submit the checked set, or submit the written answer |
 | `tab` / `shift+tab`, `←` / `→` | Batch: switch question tabs (including review) |
+| `/` | Filter the option list by label and description; `enter` applies, `esc` clears |
 | `1`-`6` (review page) | Jump back to that question |
-| `esc` | Cancel; inside the editor it goes back to the list |
+| `esc` | Cancel; inside the editor it goes back to the list; with an active filter it clears the filter first |
 
 When a question has no options, the editor opens immediately and `esc` cancels. In a batch, the next unanswered question is opened automatically, and the review page warns once before submitting with skipped questions.
+
+Filtering keeps the original option numbers, so `User selected: 3. SQLite` always refers to the full list; the hint mentions `/` once a question has six or more options. A `timeout` shows a live countdown and returns a timeout (not a cancel) when it expires.
 
 While the prompt is open, the extension reports `blocked: { kind: "question" }` so terminals that support program status show Pi as waiting for input.
 
@@ -86,7 +90,7 @@ While the prompt is open, the extension reports `blocked: { kind: "question" }` 
 | Mode | Behavior |
 |---|---|
 | `tui` | Custom component: list, inline editor, tabs and review page |
-| `rpc` | `ctx.ui.select()` / `ctx.ui.input()` dialogs. Multi-select becomes a toggle loop ending in "Done"; a batch is asked sequentially with no review page |
+| `rpc` | `ctx.ui.select()` / `ctx.ui.input()` dialogs. Multi-select becomes a toggle loop ending in "Done"; a batch is asked sequentially with no review page. `timeout` is one deadline for the whole call, passed to each dialog as its remaining time |
 | `print` / `json` | No UI: the tool returns a message telling the model to ask in plain text and end its turn |
 
 Aborting the agent turn (`esc`) or the tool call dismisses the prompt and returns a cancellation; it never hangs. Cancelling any question in an RPC batch cancels the whole batch.
@@ -105,6 +109,8 @@ The extension ships a `promptSnippet` (one line in the tools section) and `promp
 
 - The schema is a flat object with `allowFreeform` / `allowMultiple` / `questions`, not a union: some provider proxies strip `anyOf`.
 - `executionMode: "sequential"` because two overlapping prompts would fight for input focus.
+- Filtering and multi-select both index by original option position, so checking options, changing the filter and switching tabs never rewrites an answer.
+- The timeout timer and the abort listener are detached on every exit path, including cancel, timeout, submit and component disposal.
 - `details` is stable and persisted, so the transcript renders correctly when a session is resumed. v1 single details (without `kind`) still render.
 
 ```ts
@@ -141,7 +147,7 @@ npm run check                     # tsc --noEmit + smoke test
 node test/smoke.mjs               # loads the extension with jiti and drives the UI with raw keys
 ```
 
-The smoke test covers option selection, digit quick-pick, free-form, multi-select, batches with review and skip, cancellation, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal.
+The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal.
 
 Real end-to-end check in a non-interactive shell:
 
@@ -153,5 +159,4 @@ pi -e ./index.ts --no-builtin-tools --model opencode-go/claude-haiku-5-5 \
 ## Known limitations
 
 - `pi-ask-user` is already taken on npm by a different, much larger implementation. `pi-ask` is the placeholder package name; the tool name `ask_user` is independent of it.
-- No search/filter in long option lists; keep option counts small (the prompt guidelines already ask for 2-5).
 - RPC multi-select is functional but clunky (a select loop) because RPC has no custom component support.

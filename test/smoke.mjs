@@ -390,4 +390,111 @@ async function runDialogs(inputParams, ui) {
 	assert.match(batch.render(80).join("\n"), /not answered/);
 }
 
+// 21. Filter: "/" narrows the list, Enter applies, selection keeps the original option number.
+{
+	const result = await runTui(
+		{
+			question: "Which database?",
+			options: [
+				{ label: "Postgres" },
+				{ label: "MongoDB" },
+				{ label: "SQLite" },
+				{ label: "DuckDB" },
+				{ label: "ClickHouse" },
+				{ label: "CockroachDB" },
+			],
+		},
+		(component, render) => {
+			component.handleInput("/");
+			for (const char of "sql") component.handleInput(char);
+			assert.match(render(), /sql/);
+			component.handleInput(KEYS.enter);
+			assert.match(render(), /Filter: sql/);
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.equal(result.content[0].text, "User selected: 3. SQLite");
+}
+
+// 22. Filter with no matches shows an empty state; Esc clears the filter before cancelling.
+{
+	const result = await runTui(
+		{
+			question: "Which database?",
+			options: [{ label: "Postgres" }, { label: "SQLite" }],
+		},
+		(component, render) => {
+			component.handleInput("/");
+			for (const char of "zzz") component.handleInput(char);
+			assert.match(render(), /No options match "zzz"/);
+			component.handleInput(KEYS.escape);
+			assert.match(render(), /Postgres/);
+			component.handleInput(KEYS.escape);
+		},
+	);
+	assert.equal(result.details.cancelled, true);
+}
+
+// 23. Filtering never rewrites the checked set: multi-select keeps the original index.
+{
+	const result = await runTui(
+		{
+			question: "Which features?",
+			allowMultiple: true,
+			options: [{ label: "Auth" }, { label: "Billing" }, { label: "Search" }],
+		},
+		(component) => {
+			component.handleInput("/");
+			for (const char of "sea") component.handleInput(char);
+			component.handleInput(KEYS.enter);
+			component.handleInput(KEYS.space);
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.equal(result.content[0].text, "User selected: 3. Search");
+	assert.deepEqual(result.details.response.indexes, [3]);
+}
+
+// 24. Timeout auto-dismisses the prompt and is reported as a timeout, not a cancel.
+{
+	const result = await runTui(
+		{ question: "Are you still there?", timeout: 1000, options: [{ label: "Yes" }, { label: "No" }] },
+		(component, render) => {
+			assert.match(render(), /⏱/);
+		},
+	);
+	assert.equal(result.details.timedOut, true);
+	assert.match(result.content[0].text, /timed out/);
+}
+
+// 25. RPC timeout is passed to the dialogs as remaining time.
+{
+	let seenOptions;
+	const result = await runDialogs(
+		{
+			question: "Which database?",
+			timeout: 5000,
+			options: [{ label: "Postgres" }, { label: "SQLite" }],
+		},
+		{
+			select: async (_title, _choices, opts) => {
+				seenOptions = opts;
+				return "1. Postgres";
+			},
+		},
+	);
+	assert.equal(seenOptions.timeout > 0 && seenOptions.timeout <= 5000, true);
+	assert.equal(result.content[0].text, "User selected: 1. Postgres");
+}
+
+// 26. RPC dismissal before the deadline is a cancel, not a timeout.
+{
+	const result = await runDialogs(
+		{ question: "Which database?", timeout: 5000, options: [{ label: "Postgres" }] },
+		{ select: async () => undefined },
+	);
+	assert.equal(result.details.cancelled, true);
+	assert.ok(!result.details.timedOut);
+}
+
 console.log("smoke: all checks passed");
