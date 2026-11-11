@@ -550,6 +550,233 @@ async function runDialogs(inputParams, ui) {
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/*.ts"]);
 	assert.ok(manifest.files.includes("extensions"));
 	assert.ok(manifest.files.includes("skills"));
+
+	// The version Pi reports comes from package.json; the newest changelog heading
+	// has to match it or the update is not announced.
+	const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
+	assert.equal(manifest.version, changelog.match(/^## (\d+\.\d+\.\d+)/m)?.[1]);
+}
+
+// ---- notify ----------------------------------------------------------------
+
+// The notify extension registers no tool: it listens to lifecycle events and
+// writes to the terminal, so the harness drives the handlers directly.
+const notifyModule = await jiti.import("../extensions/notify.ts");
+const notifyHandlers = new Map();
+const notifyCommands = new Map();
+const notifyBus = new Map();
+notifyModule.default({
+	on: (name, handler) => notifyHandlers.set(name, handler),
+	events: {
+		on: (channel, handler) => notifyBus.set(channel, handler),
+		emit: (channel, data) => notifyBus.get(channel)?.(data),
+	},
+	registerCommand: (name, options) => notifyCommands.set(name, options),
+});
+
+const { resolveChannel } = await jiti.import("../src/notify/channel.ts");
+const { encodeOsc, wrapTmux, sanitize, formatDuration, TOAST_SCRIPT, toastEnv } = await jiti.import(
+	"../src/notify/payload.ts",
+);
+const { loadNotifySettings, NOTIFY_EVENTS } = await jiti.import("../src/notify/settings.ts");
+
+const notices = [];
+const notifyCtx = (overrides = {}) => ({
+	mode: "tui",
+	cwd: "/tmp/pi-toolkit-project",
+	isIdle: () => true,
+	ui: { notify: (message) => notices.push(message) },
+	...overrides,
+});
+
+/** Runs `fn` with stdout captured, so its escape codes can be asserted. */
+async function captured(fn) {
+	const writes = [];
+	const original = process.stdout.write;
+	process.stdout.write = (chunk) => {
+		writes.push(String(chunk));
+		return true;
+	};
+	try {
+		await fn();
+	} finally {
+		process.stdout.write = original;
+	}
+	return writes.join("");
+}
+
+const fire = (name, event, ctx) => captured(() => notifyHandlers.get(name)(event, ctx));
+
+// 31. Channel detection follows the terminal, and an explicit setting wins.
+{
+	const auto = "auto";
+	assert.equal(resolveChannel(auto, {}, "win32"), "toast");
+	assert.equal(resolveChannel(auto, { WT_SESSION: "1" }, "linux"), "osc9");
+	assert.equal(resolveChannel(auto, { KITTY_WINDOW_ID: "1" }, "linux"), "osc99");
+	assert.equal(resolveChannel(auto, { TERM_PROGRAM: "iTerm.app" }, "darwin"), "osc9");
+	assert.equal(resolveChannel(auto, { TERM_PROGRAM: "WezTerm" }, "linux"), "osc777");
+	assert.equal(resolveChannel(auto, { TERM: "xterm-ghostty" }, "linux"), "osc777");
+	assert.equal(resolveChannel(auto, {}, "linux"), "osc777");
+	// Forced toast on a non-Windows host degrades instead of going silent.
+	assert.equal(resolveChannel("toast", {}, "linux"), "osc777");
+	assert.equal(resolveChannel("bell", {}, "win32"), "bell");
+	assert.equal(resolveChannel("off", {}, "tui"), "off");
+}
+
+// 32. Payloads are one line of printable text: control characters cannot end a
+// sequence early, and `;` cannot shift the fields of OSC 777.
+{
+	const notification = { title: "Pi · demo", body: "Done in 3m 07s" };
+	assert.equal(encodeOsc("osc777", notification), "\x1b]777;notify;Pi · demo;Done in 3m 07s\x07");
+	assert.equal(encodeOsc("bell", notification), "\x07");
+
+	const hostile = { title: "a;b\x1b]99;x\x07", body: "line1\nline2\ttab\u0007" };
+	const encoded = encodeOsc("osc777", hostile);
+	assert.equal(encoded, "\x1b]777;notify;a,b ]99,x;line1 line2 tab\x07");
+	assert.equal(encoded.split("\x1b").length, 2, "exactly one ESC opens the sequence");
+
+	const kitty = encodeOsc("osc99", notification, 7);
+	assert.ok(kitty.startsWith("\x1b]99;i=7:d=0;Pi · demo\x1b\\"));
+	assert.ok(kitty.endsWith("\x1b]99;i=7:p=body;Done in 3m 07s\x1b\\"));
+
+	assert.ok(encodeOsc("osc777", { title: "t", body: "x".repeat(500) }).includes("…"));
+	assert.equal(sanitize("a\nb", 10), "a b");
+	assert.equal(formatDuration(0), "0s");
+	assert.equal(formatDuration(67_000), "1m 07s");
+	assert.equal(formatDuration(3_600_000), "1h 00m");
+}
+
+// 33. Inside tmux every escape is doubled and wrapped in a DCS passthrough.
+{
+	const wrapped = wrapTmux("\x1b]777;notify;Pi;Done\x07");
+	assert.ok(wrapped.startsWith("\x1bPtmux;\x1b\x1b\x1b]777"));
+	assert.ok(wrapped.endsWith("\x1b\\"));
+	const body = wrapped.slice("\x1bPtmux;\x1b".length, -2);
+	assert.equal(body.replaceAll("\x1b\x1b", "").includes("\x1b"), false, "every ESC is doubled");
+}
+
+// 34. Windows toast text travels through the environment, never through the
+// script: model output cannot inject PowerShell.
+{
+	const hostile = { title: "Pi", body: "$(calc.exe) '); Remove-Item C:\\ -Recurse" };
+	assert.equal(toastEnv(hostile).PI_NOTIFY_BODY, hostile.body);
+	assert.ok(!TOAST_SCRIPT.includes("calc.exe"), "script never contains user text");
+	assert.ok(TOAST_SCRIPT.includes("$env:PI_NOTIFY_BODY"));
+	assert.ok(TOAST_SCRIPT.includes("CreateTextNode"));
+}
+
+// 35. notify settings: defaults, clamping, filtering, and a loud malformed file.
+{
+	assert.deepEqual(loadNotifySettings().events, [...NOTIFY_EVENTS]);
+	writeFileSync(
+		settingsFile,
+		JSON.stringify({ notify: { enabled: false, channel: "osc99", minDurationMs: -5, events: ["done", "bogus"] } }),
+	);
+	const parsed = loadNotifySettings();
+	assert.equal(parsed.enabled, false);
+	assert.equal(parsed.channel, "osc99");
+	assert.equal(parsed.minDurationMs, 0, "negative durations clamp to zero");
+	assert.deepEqual(parsed.events, ["done"]);
+
+	writeFileSync(settingsFile, JSON.stringify({ notify: { channel: "nope", minDurationMs: 9e12 } }));
+	const clamped = loadNotifySettings();
+	assert.equal(clamped.channel, "auto", "an unknown channel falls back to auto");
+	assert.equal(clamped.minDurationMs, 3_600_000);
+
+	writeFileSync(settingsFile, "{ not json");
+	assert.throws(() => loadNotifySettings(), /pi-toolkit\.json is not valid JSON/);
+	rmSync(settingsFile);
+}
+
+// 36. A finished run notifies only after the configured minimum duration.
+{
+	writeFileSync(settingsFile, JSON.stringify({ notify: { minDurationMs: 0, channel: "osc777" } }));
+	notifyHandlers.get("agent_start")({}, notifyCtx());
+	assert.match(await fire("agent_settled", { aborted: false }, notifyCtx()), /Done in/);
+
+	writeFileSync(settingsFile, JSON.stringify({ notify: { minDurationMs: 60000, channel: "osc777" } }));
+	notifyHandlers.get("agent_start")({}, notifyCtx());
+	assert.equal(await fire("agent_settled", { aborted: false }, notifyCtx()), "");
+	rmSync(settingsFile);
+}
+
+// 37. Escape is the user acting: an aborted run never notifies.
+{
+	writeFileSync(settingsFile, JSON.stringify({ notify: { minDurationMs: 0, channel: "osc777" } }));
+	notifyHandlers.get("agent_start")({}, notifyCtx());
+	assert.equal(await fire("agent_settled", { aborted: true }, notifyCtx()), "");
+	rmSync(settingsFile);
+}
+
+// 38. A failed run is reported with the provider message, not as "done".
+{
+	writeFileSync(settingsFile, JSON.stringify({ notify: { minDurationMs: 600000, channel: "osc777" } }));
+	notifyHandlers.get("agent_start")({}, notifyCtx());
+	notifyHandlers.get("agent_end")({
+		messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limited" }],
+	});
+	assert.match(
+		await fire("agent_settled", { aborted: false }, notifyCtx()),
+		/Stopped with an error: 429 rate limited/,
+	);
+	rmSync(settingsFile);
+}
+
+// 39. A prompt that interrupts a running agent means "blocked on you"; a dialog
+// the user opened while idle is not worth a notification.
+{
+	writeFileSync(settingsFile, JSON.stringify({ notify: { channel: "osc777" } }));
+	const busy = () => notifyCtx({ isIdle: () => false });
+
+	notifyBus.get("pi-toolkit:ask:waiting")({ question: "Which database?" });
+	assert.match(await fire("ui_prompt_start", { kind: "custom" }, busy()), /Waiting for you: Which database\?/);
+
+	notifyBus.get("pi-toolkit:ask:settled")(undefined);
+	const unnamed = await fire("ui_prompt_start", { kind: "custom" }, busy());
+	assert.match(unnamed, /Waiting for your answer/);
+	assert.ok(!unnamed.includes("Which database?"), "the question text is cleared once the prompt closes");
+
+	// The user's own picker: no agent is blocked.
+	assert.equal(await fire("ui_prompt_start", { kind: "select", title: "Pick a model" }, notifyCtx()), "");
+	rmSync(settingsFile);
+}
+
+// 40. /notify off mutes the session and /notify test bypasses both the switch
+// and the minimum duration; status names the resolved channel.
+{
+	writeFileSync(settingsFile, JSON.stringify({ notify: { minDurationMs: 0, channel: "osc777" } }));
+	const ctx = notifyCtx();
+	const command = notifyCommands.get("notify");
+	assert.ok(command.getArgumentCompletions("t").some((item) => item.value === "test"));
+
+	await command.handler("off", ctx);
+	notifyHandlers.get("agent_start")({}, ctx);
+	assert.equal(await fire("agent_settled", { aborted: false }, ctx), "");
+
+	assert.match(await captured(() => command.handler("test", ctx)), /Notifications are working/);
+	assert.ok(notices.some((message) => message.includes("sent a test notification via osc777")));
+
+	await command.handler("status", ctx);
+	assert.ok(notices.some((message) => message.includes("notifications off · osc777")));
+
+	await command.handler("on", ctx);
+	notifyHandlers.get("agent_start")({}, ctx);
+	assert.match(await fire("agent_settled", { aborted: false }, ctx), /Done in/);
+	rmSync(settingsFile);
+}
+
+// 41. Non-TUI modes never receive escape codes: they would corrupt the JSON
+// stream and the printed answer, `/notify test` included.
+{
+	writeFileSync(settingsFile, JSON.stringify({ notify: { minDurationMs: 0, channel: "osc777" } }));
+	for (const mode of ["rpc", "json", "print"]) {
+		const ctx = notifyCtx({ mode });
+		notifyHandlers.get("agent_start")({}, ctx);
+		assert.equal(await fire("agent_settled", { aborted: false }, ctx), "");
+		assert.equal(await fire("ui_prompt_start", { kind: "custom" }, notifyCtx({ mode, isIdle: () => false })), "");
+		assert.equal(await captured(() => notifyCommands.get("notify").handler("test", ctx)), "");
+	}
+	rmSync(settingsFile);
 }
 
 rmSync(agentDir, { recursive: true, force: true });

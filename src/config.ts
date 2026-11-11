@@ -32,11 +32,14 @@ function readNumber(data: Record<string, unknown>, key: string, min: number, max
 }
 
 /**
- * Reads the settings file on every call so edits apply without a restart.
- * A missing file is normal; a malformed one throws with its path so a config
- * mistake is visible instead of silently ignored.
+ * Raw settings object shared by every extension in the pack.
+ *
+ * A missing file is normal and yields `{}`; a malformed one throws with its path
+ * so a config mistake is visible instead of silently ignored. Callers are
+ * expected to read it on every use, never cache it: edits apply without a
+ * restart.
  */
-export function loadSettings(path: string = settingsPath()): AskUserSettings {
+export function readSettingsData(path: string = settingsPath()): Record<string, unknown> {
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");
@@ -53,8 +56,12 @@ export function loadSettings(path: string = settingsPath()): AskUserSettings {
 	}
 
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-	const data = parsed as Record<string, unknown>;
+	return parsed as Record<string, unknown>;
+}
 
+/** ask_user defaults, read through the shared settings object. */
+export function loadSettings(path: string = settingsPath()): AskUserSettings {
+	const data = readSettingsData(path);
 	const settings: AskUserSettings = {};
 	const timeout = readNumber(data, "timeout", TIMEOUT_MIN, TIMEOUT_MAX);
 	if (timeout !== undefined) settings.timeout = timeout;

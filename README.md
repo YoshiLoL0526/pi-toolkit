@@ -11,6 +11,7 @@ A pack of Pi extensions distributed as one package. Every feature is a separate 
 | Extension | Tool | What it does |
 |---|---|---|
 | [`extensions/ask.ts`](extensions/ask.ts) | `ask_user` | Stops mid-task to ask you a question: pick from a list of options, select several, or write a free-form answer. Several independent questions can be asked together with tabs and a review page |
+| [`extensions/notify.ts`](extensions/notify.ts) | — | Tells you when the agent finished, failed, or is blocked on your answer, using your terminal's own notification protocol, without touching the transcript |
 
 ### Load only some extensions
 
@@ -115,14 +116,57 @@ While the prompt is open, the extension reports `blocked: { kind: "question" }` 
 
 Aborting the agent turn (`esc`) or the tool call dismisses the prompt and returns a cancellation; it never hangs. Cancelling any question in an RPC batch cancels the whole batch.
 
+## `notify`
+
+No tool, no transcript entries: this extension only listens and tells your terminal when your attention is needed. It exists because the interesting moment of a long agent run is the one where you left the window.
+
+| Notification | When |
+|---|---|
+| Done | The full run settled: no more retries, compactions or queued follow-ups. Suppressed for runs shorter than `minDurationMs` |
+| Error | The run settled after the last model request failed, with the provider message |
+| Waiting | A prompt blocked a running agent. `ask_user` adds the question text; any extension dialog counts |
+
+An aborted run (`esc`) is never announced: you were there. A dialog you open yourself while the agent is idle (model picker, settings) is not announced either.
+
+### Channels
+
+| Channel | Protocol | Used for |
+|---|---|---|
+| `toast` | Windows toast via `powershell.exe` | Any Windows terminal |
+| `osc99` | Kitty's `OSC 99` | Kitty |
+| `osc9` | `OSC 9 ; message` | iTerm2, Apple Terminal, Windows Terminal (WSL) |
+| `osc777` | `OSC 777 ; notify ; title ; body` | WezTerm, Ghostty, and the safe fallback |
+| `bell` | `BEL` | Terminals with no notification support |
+| `off` | — | Disable |
+
+`auto` (the default) picks from the environment: `KITTY_WINDOW_ID`, `TERM_PROGRAM`, `WT_SESSION`, and the platform. Inside tmux every sequence is wrapped in a DCS passthrough, because tmux drops raw escape codes. A `channel` in settings overrides the guess for terminals that lie about their environment.
+
+Text is sanitized before it reaches a control sequence: control characters are replaced, `OSC 777` fields lose their semicolons, and everything is truncated. The Windows toast never interpolates model output into PowerShell — title and body travel through environment variables and are rendered as DOM text nodes, so a body containing `$(…)` is inert text.
+
+Notifications are written only in `tui` mode. `rpc`, `json` and `print` get nothing: an escape sequence would corrupt the JSON stream or the printed answer.
+
+### Command
+
+| Command | Action |
+|---|---|
+| `/notify` or `/notify status` | Show state, resolved channel, enabled events and the duration threshold |
+| `/notify on` / `/notify off` | Toggle for the rest of the session, without touching the settings file |
+| `/notify test` | Send one notification through the resolved channel, ignoring the switch and the threshold |
+
 ## Configuration
 
-Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, so edits apply without restarting Pi.
+Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call and on every notification, so edits apply without restarting Pi.
 
 ```json
 {
   "timeout": 120000,
-  "filterThreshold": 8
+  "filterThreshold": 8,
+  "notify": {
+    "enabled": true,
+    "channel": "auto",
+    "minDurationMs": 20000,
+    "events": ["done", "input", "error"]
+  }
 }
 ```
 
@@ -130,8 +174,12 @@ Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-tool
 |---|---|---|
 | `timeout` | — | Fallback timeout (1000-600000 ms) when the tool call does not set one. A per-call `timeout` wins |
 | `filterThreshold` | `6` | Option count at which the `/ to filter` hint appears (2-20) |
+| `notify.enabled` | `true` | Master switch for notifications |
+| `notify.channel` | `auto` | `auto`, `osc9`, `osc99`, `osc777`, `toast`, `bell` or `off` |
+| `notify.minDurationMs` | `20000` | Runs shorter than this only notify for `input` and `error` (0-3600000). `/notify test` ignores it |
+| `notify.events` | `["done", "input", "error"]` | Which notifications to send. An unknown name is dropped; an all-invalid list falls back to every event |
 
-Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored.
+Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored. The notify extension reports the same error once per session and stays quiet.
 
 ## Skill
 
@@ -195,7 +243,7 @@ Adding an extension: create `extensions/<name>.ts` with a default `export defaul
 
 Project conventions, invariants and the testing contract live in [`AGENTS.md`](AGENTS.md).
 
-The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
+The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, plus notification channel detection, payload sanitization, tmux passthrough, toast injection safety, settings clamping and the non-TUI guard, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
 
 Real end-to-end check in a non-interactive shell:
 
@@ -207,3 +255,6 @@ pi -e ./extensions/ask.ts --no-builtin-tools --model opencode-go/claude-haiku-5-
 ## Known limitations
 
 - RPC multi-select is functional but clunky (a select loop) because RPC has no custom component support.
+- Notifications are `tui`-only. In `--mode rpc` the client owns its notification UX, and writing escape codes there would corrupt the protocol.
+- Windows toasts need Windows PowerShell 5.1 (`pwsh` has no WinRT projection) and are best effort: a system that blocks the app id fails silently by design. `/notify test` is the way to find out.
+- Detection is a guess from environment variables. A terminal we do not recognise gets `OSC 777`, which unsupported terminals ignore; set `notify.channel` if yours needs something else.

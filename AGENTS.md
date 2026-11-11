@@ -9,23 +9,32 @@ one peer-dependency set. Every feature is a separate extension file under `exten
 so a new feature never creates a new repo or a new package — but a user can still load
 just the parts they want (`pi config`, or a `"extensions": [...]` filter in settings).
 
-The first and so far only extension is `ask_user`, which blocks the turn so the model
-can ask the user a question (single, multi-select, batch, free-form).
+The pack ships two extensions. `ask_user` blocks the turn so the model can ask the
+user a question (single, multi-select, batch, free-form). `notify` tells the user
+when the agent finished, failed, or is blocked on an answer, using the terminal's
+own notification protocol.
 
 ## Layout
 
 ```
-extensions/ask.ts   extension entrypoint: registers the tool, wires modes, no UI logic
-src/schema.ts       typebox params + normalizeParams(): validation, defaults, hard caps
-src/types.ts        shared shapes (AskRequest / AskOutcome / AskDetails)
-src/config.ts       settings file (<agent-dir>/pi-toolkit.json) and per-call defaults
-src/format.ts       model-facing result text and persisted details
-src/render.ts       transcript rendering of call args and stored details
-src/prompt.ts       promptSnippet + promptGuidelines
-src/ui/question.ts  TUI custom component (the real UI)
-src/ui/fallback.ts  RPC dialog fallback (select/input loops)
-skills/ask-user/    shipped decision-gate skill
-test/smoke.mjs      the contract: 30 checks driving the extension without a model
+extensions/ask.ts      extension entrypoint: registers the tool, wires modes, no UI logic
+extensions/notify.ts   lifecycle listeners + /notify command; no tool, no transcript entries
+src/schema.ts          typebox params + normalizeParams(): validation, defaults, hard caps
+src/types.ts           shared shapes (AskRequest / AskOutcome / AskDetails)
+src/config.ts          settings file (<agent-dir>/pi-toolkit.json), shared by every extension
+src/format.ts          model-facing result text and persisted details
+src/render.ts          transcript rendering of call args and stored details
+src/prompt.ts          promptSnippet + promptGuidelines
+src/ui/question.ts     TUI custom component (the real UI)
+src/ui/fallback.ts     RPC dialog fallback (select/input loops)
+src/notify/channel.ts  env + platform -> delivery channel; pure detection matrix
+src/notify/payload.ts  sanitizing and OSC encoding, tmux wrapping, the toast script
+src/notify/messages.ts the text of each notification
+src/notify/send.ts     delivery with injected IO
+src/notify/settings.ts the `notify` block of the settings file
+src/notify/toast.ts    fire-and-forget Windows toast (PowerShell 5.1)
+skills/ask-user/       shipped decision-gate skill
+test/smoke.mjs         the contract: 41 checks driving the extensions without a model
 ```
 
 Data flows one way: `schema` → `AskRequest` → (`ui/question` | `ui/fallback`) → `AskOutcome`
@@ -60,6 +69,12 @@ Each extension stays independent: it may assume Pi's host packages, nothing else
   timeout and abort all have to resolve. Timers and abort listeners are detached on
   every path — a prompt that hangs blocks the whole agent turn.
 - **No UI in headless modes.** `ctx.hasUI === false` returns `HEADLESS_TEXT` immediately.
+- **Never write terminal escape codes outside `tui` mode.** `notify` writes OSC sequences
+  straight to stdout; in `rpc`/`json` they corrupt the protocol and in `print` they end up
+  in the answer. The mode guard is the first check in every send path, and a smoke check
+  pins it.
+- **Notifications are best effort and never block.** No `await` on delivery, no throwing
+  from a lifecycle handler; a terminal without notifications is not an error.
 - **One prompt at a time.** The tool is `executionMode: "sequential"` because two prompts
   would fight for input focus.
 - **Indexes refer to the original option list.** Filtering and multi-select index by

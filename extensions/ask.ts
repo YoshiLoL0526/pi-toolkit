@@ -7,6 +7,10 @@ import { askInTui } from "../src/ui/question.js";
 import { askWithDialogs } from "../src/ui/fallback.js";
 import { renderCall, renderResult } from "../src/render.js";
 
+/** Announced on the shared bus so a notification extension can name the question. */
+const ASK_WAITING = "pi-toolkit:ask:waiting";
+const ASK_SETTLED = "pi-toolkit:ask:settled";
+
 export default function askUserExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "ask_user",
@@ -30,12 +34,23 @@ export default function askUserExtension(pi: ExtensionAPI) {
 				};
 			}
 
-			const outcome =
-				ctx.mode === "tui"
-					? await askInTui(request, ctx, signal, {
-							filterThreshold: settings.filterThreshold ?? DEFAULT_FILTER_THRESHOLD,
-					  })
-					: await askWithDialogs(request, ctx, signal);
+			// Emitted around the wait, not around the answer: a listener needs the
+			// question text while the prompt is blocked on the user.
+			pi.events?.emit(ASK_WAITING, {
+				question: request.heading ?? request.questions[0]?.question ?? "",
+			});
+
+			let outcome;
+			try {
+				outcome =
+					ctx.mode === "tui"
+						? await askInTui(request, ctx, signal, {
+								filterThreshold: settings.filterThreshold ?? DEFAULT_FILTER_THRESHOLD,
+						  })
+						: await askWithDialogs(request, ctx, signal);
+			} finally {
+				pi.events?.emit(ASK_SETTLED, undefined);
+			}
 
 			return {
 				content: [{ type: "text", text: formatOutcome(request, outcome) }],
