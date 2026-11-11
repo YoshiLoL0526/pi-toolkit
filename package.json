@@ -1,37 +1,39 @@
 {
-  "name": "pi-ask",
+  "name": "pi-toolkit",
   "version": "1.0.0",
-  "description": "Interactive ask_user tool for Pi: ask the user a question with options, multi-select, batches and free-form answers.",
+  "description": "A pack of Pi extensions. Ships ask_user: an interactive question tool with options, multi-select, batches and free-form answers.",
   "type": "module",
   "license": "MIT",
   "author": "Raidel Martínez Santos <yoshilol0526@gmail.com>",
-  "homepage": "https://github.com/YoshiLoL0526/pi-ask#readme",
+  "homepage": "https://github.com/YoshiLoL0526/pi-toolkit#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YoshiLoL0526/pi-ask.git"
+    "url": "git+https://github.com/YoshiLoL0526/pi-toolkit.git"
   },
   "bugs": {
-    "url": "https://github.com/YoshiLoL0526/pi-ask/issues"
+    "url": "https://github.com/YoshiLoL0526/pi-toolkit/issues"
   },
   "keywords": [
     "pi-package",
     "pi",
     "pi-coding-agent",
     "extension",
+    "extensions",
+    "toolkit",
     "ask",
     "ask_user",
     "interactive"
   ],
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./extensions/*.ts"
     ],
     "skills": [
       "./skills"
     ]
   },
   "files": [
-    "index.ts",
+    "extensions",
     "src",
     "skills",
     "README.md",

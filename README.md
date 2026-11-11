@@ -1,28 +1,46 @@
-# pi-ask
+# pi-toolkit
 
-[![npm](https://img.shields.io/npm/v/pi-ask.svg)](https://www.npmjs.com/package/pi-ask)
-[![CI](https://github.com/YoshiLoL0526/pi-ask/actions/workflows/ci.yml/badge.svg)](https://github.com/YoshiLoL0526/pi-ask/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/pi-ask.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/pi-toolkit.svg)](https://www.npmjs.com/package/pi-toolkit)
+[![CI](https://github.com/YoshiLoL0526/pi-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/YoshiLoL0526/pi-toolkit/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/pi-toolkit.svg)](LICENSE)
 
-A Pi extension that registers an interactive `ask_user` tool, so the model can stop mid-task and ask you a question: pick from a list of options, select several, or write a free-form answer. Several independent questions can be asked together with tabs and a review page.
+A pack of Pi extensions distributed as one package. Every feature is a separate file under `extensions/`, so the whole pack installs with one command and each extension can still be filtered out by whoever does not want it.
 
-Built on Pi's `ctx.ui.custom()` TUI component model, with a dialog fallback for RPC mode and a clear message for non-interactive modes.
+## Extensions
+
+| Extension | Tool | What it does |
+|---|---|---|
+| [`extensions/ask.ts`](extensions/ask.ts) | `ask_user` | Stops mid-task to ask you a question: pick from a list of options, select several, or write a free-form answer. Several independent questions can be asked together with tabs and a review page |
+
+### Load only some extensions
+
+Omit an extension from the package in settings (personal or project), or toggle it off with `pi config`:
+
+```json
+{
+  "packages": [
+    { "source": "npm:pi-toolkit", "extensions": ["extensions/ask.ts"] }
+  ]
+}
+```
 
 ## Install
 
 ```bash
-pi install npm:pi-ask
+pi install npm:pi-toolkit
 ```
 
 Or try it for one run without installing:
 
 ```bash
-pi -e npm:pi-ask
+pi -e npm:pi-toolkit
 ```
 
-From a local checkout, `pi install ./` or `pi -e ./index.ts`.
+From a local checkout, `pi install ./` loads every extension, while `pi -e ./extensions/ask.ts` loads just one.
 
-## Tool
+## `ask_user`
+
+The first extension in the pack registers an interactive `ask_user` tool, so the model can stop mid-task and ask you a question. Built on Pi's `ctx.ui.custom()` TUI component model, with a dialog fallback for RPC mode and a clear message for non-interactive modes.
 
 Name: `ask_user`.
 
@@ -99,7 +117,7 @@ Aborting the agent turn (`esc`) or the tool call dismisses the prompt and return
 
 ## Configuration
 
-Optional defaults live in `~/.pi/agent/pi-ask.json`, or `<agent-dir>/pi-ask.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, so edits apply without restarting Pi.
+Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, so edits apply without restarting Pi.
 
 ```json
 {
@@ -173,12 +191,14 @@ npm run check                     # tsc --noEmit + smoke test
 node test/smoke.mjs               # loads the extension with jiti and drives the UI with raw keys
 ```
 
+Adding an extension: create `extensions/<name>.ts` with a default `export default function (pi: ExtensionAPI)`, give its tools globally unique names, and put feature-specific logic in `src/<name>/`, importing the shared `src/ui`, `src/config.ts` and `src/format.ts`. The `pi.extensions` glob picks it up with no manifest change. Keep heavy dependencies behind `await import()` inside `execute` so the pack stays cheap to load.
+
 The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
 
 Real end-to-end check in a non-interactive shell:
 
 ```bash
-pi -e ./index.ts --no-builtin-tools --model opencode-go/claude-haiku-5-5 \
+pi -e ./extensions/ask.ts --no-builtin-tools --model opencode-go/claude-haiku-5-5 \
   -p "Call ask_user once with question 'Which color do you prefer?' and options Red and Blue."
 ```
 

@@ -1,11 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { askUserParameters, normalizeParams } from "./src/schema.js";
-import { promptGuidelines, promptSnippet } from "./src/prompt.js";
-import { HEADLESS_TEXT, emptyOutcome, formatOutcome, toDetails } from "./src/format.js";
-import { DEFAULT_FILTER_THRESHOLD, applySettings, loadSettings } from "./src/config.js";
-import { askInTui } from "./src/ui/question.js";
-import { askWithDialogs } from "./src/ui/fallback.js";
-import { renderCall, renderResult } from "./src/render.js";
+import { askUserParameters, normalizeParams } from "../src/schema.js";
+import { promptGuidelines, promptSnippet } from "../src/prompt.js";
+import { HEADLESS_TEXT, emptyOutcome, formatOutcome, toDetails } from "../src/format.js";
+import { DEFAULT_FILTER_THRESHOLD, applySettings, loadSettings } from "../src/config.js";
+import { askInTui } from "../src/ui/question.js";
+import { askWithDialogs } from "../src/ui/fallback.js";
+import { renderCall, renderResult } from "../src/render.js";
 
 export default function askUserExtension(pi: ExtensionAPI) {
 	pi.registerTool({

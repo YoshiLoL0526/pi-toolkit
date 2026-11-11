@@ -2,8 +2,10 @@
 
 ## 1.0.0 - 2026-11-11
 
-First public release.
+First public release, distributed as a pack of extensions.
 
+- One package, one version, one changelog: every feature is a file under `extensions/`, discovered through the `./extensions/*.ts` glob. `ask_user` lives in `extensions/ask.ts`.
+- Extensions can be filtered per install (`"extensions": ["extensions/ask.ts"]` in settings, or `pi config`), so the pack is not all-or-nothing.
 - `ask_user` tool registered through `pi.registerTool`, built on `ctx.ui.custom()`.
 - Options list with an inline editor for free-form answers; open questions start in the editor.
 - Multi-select (`allowMultiple`) with `space` toggling, free text alongside the checked set, and a guard against empty submissions.
@@ -14,6 +16,6 @@ First public release.
 - Cancellation via `esc` or the abort signal, with instructions that keep the model from re-asking the same question.
 - Stable `details` for transcript rendering and resumed sessions; v1 single details still render.
 - Prompt integration via `promptSnippet` and `promptGuidelines`.
-- Optional `~/.pi/agent/pi-ask.json` with `timeout` and `filterThreshold` defaults.
+- Optional `~/.pi/agent/pi-toolkit.json` with `timeout` and `filterThreshold` defaults.
 - Packaged `ask-user` skill: when to ask versus decide, the decision handshake, option and batch rules.
 - 30-check smoke test that loads the extension with jiti and drives the UI with raw key sequences.

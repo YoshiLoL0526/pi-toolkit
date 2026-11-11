@@ -12,12 +12,12 @@ import { join } from "node:path";
 import { createJiti } from "jiti";
 
 // Keep the user's real settings out of the test and give each run a clean dir.
-const agentDir = mkdtempSync(join(tmpdir(), "pi-ask-test-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-toolkit-test-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
-const settingsFile = join(agentDir, "pi-ask.json");
+const settingsFile = join(agentDir, "pi-toolkit.json");
 
 const jiti = createJiti(import.meta.url);
-const extension = await jiti.import("../index.ts");
+const extension = await jiti.import("../extensions/ask.ts");
 
 const tools = [];
 extension.default({ registerTool: (definition) => tools.push(definition) });
@@ -532,7 +532,7 @@ async function runDialogs(inputParams, ui) {
 	writeFileSync(settingsFile, "{ not json");
 	await assert.rejects(
 		tool.execute("call-cfg", { question: "Hi" }, undefined, undefined, { hasUI: false, mode: "print", ui: {} }),
-		/pi-ask\.json is not valid JSON/,
+		/pi-toolkit\.json is not valid JSON/,
 	);
 	rmSync(settingsFile);
 }
@@ -547,6 +547,8 @@ async function runDialogs(inputParams, ui) {
 
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	assert.deepEqual(manifest.pi.skills, ["./skills"]);
+	assert.deepEqual(manifest.pi.extensions, ["./extensions/*.ts"]);
+	assert.ok(manifest.files.includes("extensions"));
 	assert.ok(manifest.files.includes("skills"));
 }
 

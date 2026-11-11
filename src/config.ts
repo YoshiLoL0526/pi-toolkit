@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AskRequest } from "./types.js";
 
-export const SETTINGS_FILE_NAME = "pi-ask.json";
+export const SETTINGS_FILE_NAME = "pi-toolkit.json";
 
 export const DEFAULT_FILTER_THRESHOLD = 6;
 export const FILTER_THRESHOLD_MIN = 2;
@@ -42,14 +42,14 @@ export function loadSettings(path: string = settingsPath()): AskUserSettings {
 		raw = readFileSync(path, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-		throw new Error(`pi-ask: cannot read ${path}: ${(error as Error).message}`);
+		throw new Error(`pi-toolkit: cannot read ${path}: ${(error as Error).message}`);
 	}
 
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
 	} catch {
-		throw new Error(`pi-ask: ${path} is not valid JSON`);
+		throw new Error(`pi-toolkit: ${path} is not valid JSON`);
 	}
 
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
