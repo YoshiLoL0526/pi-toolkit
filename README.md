@@ -1,24 +1,26 @@
 # pi-ask
 
+[![npm](https://img.shields.io/npm/v/pi-ask.svg)](https://www.npmjs.com/package/pi-ask)
+[![CI](https://github.com/YoshiLoL0526/pi-ask/actions/workflows/ci.yml/badge.svg)](https://github.com/YoshiLoL0526/pi-ask/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/pi-ask.svg)](LICENSE)
+
 A Pi extension that registers an interactive `ask_user` tool, so the model can stop mid-task and ask you a question: pick from a list of options, select several, or write a free-form answer. Several independent questions can be asked together with tabs and a review page.
 
 Built on Pi's `ctx.ui.custom()` TUI component model, with a dialog fallback for RPC mode and a clear message for non-interactive modes.
 
 ## Install
 
-From this folder:
-
 ```bash
-pi install ./
+pi install npm:pi-ask
 ```
 
-Or try it for one run:
+Or try it for one run without installing:
 
 ```bash
-pi -e ./index.ts
+pi -e npm:pi-ask
 ```
 
-Once published, `pi install npm:pi-ask`.
+From a local checkout, `pi install ./` or `pi -e ./index.ts`.
 
 ## Tool
 
@@ -182,5 +184,4 @@ pi -e ./index.ts --no-builtin-tools --model opencode-go/claude-haiku-5-5 \
 
 ## Known limitations
 
-- `pi-ask-user` is already taken on npm by a different, much larger implementation. `pi-ask` is the placeholder package name; the tool name `ask_user` is independent of it.
 - RPC multi-select is functional but clunky (a select loop) because RPC has no custom component support.
