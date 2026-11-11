@@ -193,6 +193,8 @@ node test/smoke.mjs               # loads the extension with jiti and drives the
 
 Adding an extension: create `extensions/<name>.ts` with a default `export default function (pi: ExtensionAPI)`, give its tools globally unique names, and put feature-specific logic in `src/<name>/`, importing the shared `src/ui`, `src/config.ts` and `src/format.ts`. The `pi.extensions` glob picks it up with no manifest change. Keep heavy dependencies behind `await import()` inside `execute` so the pack stays cheap to load.
 
+Project conventions, invariants and the testing contract live in [`AGENTS.md`](AGENTS.md).
+
 The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
 
 Real end-to-end check in a non-interactive shell:
