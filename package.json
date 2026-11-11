@@ -1,6 +1,6 @@
 {
   "name": "pi-ask",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Interactive ask_user tool for Pi: ask the user a question with selectable options and free-form answers.",
   "type": "module",
   "license": "MIT",
@@ -16,11 +16,15 @@
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "files": [
     "index.ts",
     "src",
+    "skills",
     "README.md"
   ],
   "scripts": {

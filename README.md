@@ -95,6 +95,30 @@ While the prompt is open, the extension reports `blocked: { kind: "question" }` 
 
 Aborting the agent turn (`esc`) or the tool call dismisses the prompt and returns a cancellation; it never hangs. Cancelling any question in an RPC batch cancels the whole batch.
 
+## Configuration
+
+Optional defaults live in `~/.pi/agent/pi-ask.json`, or `<agent-dir>/pi-ask.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, so edits apply without restarting Pi.
+
+```json
+{
+  "timeout": 120000,
+  "filterThreshold": 8
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `timeout` | — | Fallback timeout (1000-600000 ms) when the tool call does not set one. A per-call `timeout` wins |
+| `filterThreshold` | `6` | Option count at which the `/ to filter` hint appears (2-20) |
+
+Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored.
+
+## Skill
+
+The package ships `skills/ask-user/SKILL.md`, registered through `pi.skills`. It is a decision-gate skill: when to ask versus decide, the decision handshake, how to write options, and when batches are valid. It complements the tool's `promptGuidelines` with the reasoning that would otherwise bloat every system prompt.
+
+Skills are only advertised when Pi has a tool to read them, so running with `--no-builtin-tools` hides the skill (and the model may still call `ask_user` from the tool schema alone).
+
 ## Prompt integration
 
 The extension ships a `promptSnippet` (one line in the tools section) and `promptGuidelines` that spell out when to use `ask_user` and, more importantly, when not to:
@@ -147,7 +171,7 @@ npm run check                     # tsc --noEmit + smoke test
 node test/smoke.mjs               # loads the extension with jiti and drives the UI with raw keys
 ```
 
-The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal.
+The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
 
 Real end-to-end check in a non-interactive shell:
 

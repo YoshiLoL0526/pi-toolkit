@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { askUserParameters, normalizeParams } from "./src/schema.js";
 import { promptGuidelines, promptSnippet } from "./src/prompt.js";
 import { HEADLESS_TEXT, emptyOutcome, formatOutcome, toDetails } from "./src/format.js";
+import { DEFAULT_FILTER_THRESHOLD, applySettings, loadSettings } from "./src/config.js";
 import { askInTui } from "./src/ui/question.js";
 import { askWithDialogs } from "./src/ui/fallback.js";
 import { renderCall, renderResult } from "./src/render.js";
@@ -19,7 +20,8 @@ export default function askUserExtension(pi: ExtensionAPI) {
 		executionMode: "sequential",
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const request = normalizeParams(params);
+			const settings = loadSettings();
+			const request = applySettings(normalizeParams(params), settings);
 
 			if (!ctx.hasUI) {
 				return {
@@ -30,7 +32,9 @@ export default function askUserExtension(pi: ExtensionAPI) {
 
 			const outcome =
 				ctx.mode === "tui"
-					? await askInTui(request, ctx, signal)
+					? await askInTui(request, ctx, signal, {
+							filterThreshold: settings.filterThreshold ?? DEFAULT_FILTER_THRESHOLD,
+					  })
 					: await askWithDialogs(request, ctx, signal);
 
 			return {

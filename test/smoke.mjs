@@ -6,7 +6,15 @@
  * Run with: node test/smoke.mjs
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createJiti } from "jiti";
+
+// Keep the user's real settings out of the test and give each run a clean dir.
+const agentDir = mkdtempSync(join(tmpdir(), "pi-ask-test-"));
+process.env.PI_CODING_AGENT_DIR = agentDir;
+const settingsFile = join(agentDir, "pi-ask.json");
 
 const jiti = createJiti(import.meta.url);
 const extension = await jiti.import("../index.ts");
@@ -496,5 +504,52 @@ async function runDialogs(inputParams, ui) {
 	assert.equal(result.details.cancelled, true);
 	assert.ok(!result.details.timedOut);
 }
+
+// 27. A settings-file timeout applies when the tool call has none.
+{
+	writeFileSync(settingsFile, JSON.stringify({ timeout: 1000 }));
+	const result = await runTui({ question: "Still there?", options: [{ label: "Yes" }] }, () => {});
+	assert.equal(result.details.timedOut, true);
+	rmSync(settingsFile);
+}
+
+// 28. filterThreshold from settings controls when the `/` hint appears.
+{
+	writeFileSync(settingsFile, JSON.stringify({ filterThreshold: 3 }));
+	const result = await runTui(
+		{ question: "Pick one", options: [{ label: "A" }, { label: "B" }, { label: "C" }] },
+		(component, render) => {
+			assert.match(render(), /\/\s+to filter/);
+			component.handleInput("2");
+		},
+	);
+	assert.equal(result.content[0].text, "User selected: 2. B");
+	rmSync(settingsFile);
+}
+
+// 29. A malformed settings file fails loudly with its path instead of being ignored.
+{
+	writeFileSync(settingsFile, "{ not json");
+	await assert.rejects(
+		tool.execute("call-cfg", { question: "Hi" }, undefined, undefined, { hasUI: false, mode: "print", ui: {} }),
+		/pi-ask\.json is not valid JSON/,
+	);
+	rmSync(settingsFile);
+}
+
+// 30. The packaged skill ships valid frontmatter and names the tool.
+{
+	const skill = readFileSync(new URL("../skills/ask-user/SKILL.md", import.meta.url), "utf8");
+	assert.match(skill, /^---\nname: ask-user\n/);
+	const description = skill.match(/^---[\s\S]*?description: (.+)$/m)?.[1] ?? "";
+	assert.ok(description.length > 60, "skill description should route clearly");
+	assert.match(skill, /ask_user/);
+
+	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	assert.deepEqual(manifest.pi.skills, ["./skills"]);
+	assert.ok(manifest.files.includes("skills"));
+}
+
+rmSync(agentDir, { recursive: true, force: true });
 
 console.log("smoke: all checks passed");

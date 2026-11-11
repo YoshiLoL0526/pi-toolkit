@@ -26,12 +26,19 @@ const UNCHECKED = "[ ]";
  * Multi-select: space toggles, Enter submits the checked set.
  * `/` filters the option list in place; `timeout` auto-dismisses the prompt.
  */
+export interface PromptUiOptions {
+	/** Show the `/` filter hint once a question has this many options. */
+	filterThreshold?: number;
+}
+
 export async function askInTui(
 	request: AskRequest,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
+	uiOptions?: PromptUiOptions,
 ): Promise<AskOutcome> {
 	const questions = request.questions;
+	const filterHintThreshold = uiOptions?.filterThreshold ?? FILTER_HINT_THRESHOLD;
 	const isBatch = questions.length > 1;
 	const reviewTab = questions.length;
 	const nullResponses = () => questions.map(() => null);
@@ -647,7 +654,7 @@ export async function askInTui(
 				const question = questionAt(currentTab);
 				const batchHint = isBatch ? "tab/←→ switch • " : "";
 				const filterHint =
-					question && question.options.length >= FILTER_HINT_THRESHOLD ? " • / to filter" : "";
+					question && question.options.length >= filterHintThreshold ? " • / to filter" : "";
 				let hint: string;
 				if (editMode) {
 					hint = "Enter to submit • Esc to go back";
