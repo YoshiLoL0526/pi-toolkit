@@ -1,41 +1,132 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AskConfig, AskUiResult } from "../types.js";
-
-const OTHER_LABEL = "Other (type your own)";
+import type { AskConfig, AskOutcome, AskRequest, AskResponse } from "../types.js";
 
 /**
- * RPC (and any non-TUI surface with dialogs) fallback. `ctx.ui.custom()` is not
- * available there, so the same question is asked through select/input.
+ * Dialog fallback for RPC and other non-TUI surfaces. `ctx.ui.custom()` is not
+ * available there, so every question becomes one or more select/input dialogs.
+ *
+ * Multi-select degrades to a loop: pick an option to toggle it, then "Done".
+ * A batch is asked sequentially and has no review page; cancelling any
+ * question cancels the whole batch.
  */
 export async function askWithDialogs(
-	config: AskConfig,
+	request: AskRequest,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
-): Promise<AskUiResult> {
-	if (signal?.aborted) return null;
+): Promise<AskOutcome> {
+	const responses: (AskResponse | null)[] = [];
 
-	if (config.options.length === 0) {
-		const text = await ctx.ui.input(config.question, config.context ?? "Type your answer", { signal });
-		return text?.trim() ? { kind: "freeform", text: text.trim() } : null;
+	for (const question of request.questions) {
+		const response = await askOne(question, ctx, signal);
+		if (!response) {
+			return { responses: request.questions.map(() => null), cancelled: true };
+		}
+		responses.push(response);
 	}
 
-	const labels = config.options.map((option, i) =>
-		option.description ? `${i + 1}. ${option.label} — ${option.description}` : `${i + 1}. ${option.label}`,
-	);
-	const choices = config.allowFreeform ? [...labels, OTHER_LABEL] : labels;
+	return { responses, cancelled: false };
+}
 
-	const picked = await ctx.ui.select(config.question, choices, { signal });
+function dialogTitle(question: AskConfig): string {
+	return question.context ? `${question.question}\n\n${question.context}` : question.question;
+}
+
+async function askOne(
+	question: AskConfig,
+	ctx: ExtensionContext,
+	signal?: AbortSignal,
+): Promise<AskResponse | null> {
+	if (signal?.aborted) return null;
+
+	if (question.options.length === 0) {
+		const text = await ctx.ui.input(question.question, question.context ?? "Type your answer", { signal });
+		const trimmed = text?.trim();
+		return trimmed ? { kind: "freeform", text: trimmed } : null;
+	}
+
+	if (question.allowMultiple) {
+		return askMultiple(question, ctx, signal);
+	}
+
+	const labels = question.options.map((option, i) => `${i + 1}. ${option.label}`);
+	const choices = question.allowFreeform ? [...labels, "Other (type your own)"] : labels;
+	const picked = await ctx.ui.select(dialogTitle(question), choices, { signal });
 	if (picked === undefined) return null;
 
 	const index = choices.indexOf(picked);
 	if (index < 0) return null;
 
-	if (config.allowFreeform && index === labels.length) {
-		const text = await ctx.ui.input("Your answer", config.context ?? "", { signal });
-		return text?.trim() ? { kind: "freeform", text: text.trim() } : null;
+	if (question.allowFreeform && index === labels.length) {
+		return inputAnswer(question, ctx, signal);
 	}
 
-	const option = config.options[index];
+	const option = question.options[index];
 	if (!option) return null;
-	return { kind: "selection", label: option.label, index: index + 1 };
+	return { kind: "selection", labels: [option.label], indexes: [index + 1] };
+}
+
+async function inputAnswer(
+	question: AskConfig,
+	ctx: ExtensionContext,
+	signal?: AbortSignal,
+): Promise<AskResponse | null> {
+	const text = await ctx.ui.input("Your answer", question.context ?? "", { signal });
+	const trimmed = text?.trim();
+	return trimmed ? { kind: "freeform", text: trimmed } : null;
+}
+
+async function askMultiple(
+	question: AskConfig,
+	ctx: ExtensionContext,
+	signal?: AbortSignal,
+): Promise<AskResponse | null> {
+	const chosen = new Set<number>();
+	let text: string | undefined;
+
+	while (!signal?.aborted) {
+		const labels = question.options.map(
+			(option, i) => `${chosen.has(i) ? "✓ " : ""}${i + 1}. ${option.label}`,
+		);
+		const doneIndex = labels.length;
+		const otherIndex = question.allowFreeform ? labels.length + 1 : -1;
+		const done = chosen.size > 0 ? `Done (${chosen.size} selected)` : "Done";
+		const choices = [...labels, done, ...(question.allowFreeform ? ["Other (type your own)"] : [])];
+
+		const status =
+			chosen.size > 0 || text ? "Toggle options, then choose Done." : "Select one or more options.";
+		const picked = await ctx.ui.select(`${dialogTitle(question)}\n\n${status}`, choices, { signal });
+		if (picked === undefined) return null;
+
+		const index = choices.indexOf(picked);
+		if (index < 0) return null;
+
+		if (index < labels.length) {
+			if (chosen.has(index)) chosen.delete(index);
+			else chosen.add(index);
+			continue;
+		}
+
+		if (index === otherIndex) {
+			const written = await ctx.ui.input("Your answer", question.context ?? "", { signal });
+			if (written === undefined) return null;
+			if (written.trim()) text = written.trim();
+			continue;
+		}
+
+		if (index === doneIndex) {
+			const indexes = [...chosen].sort((a, b) => a - b).filter((i) => question.options[i]);
+			const selectedLabels = indexes.map((i) => question.options[i]?.label ?? "");
+			if (selectedLabels.length === 0 && !text) return null;
+			return selectedLabels.length > 0
+				? {
+						kind: "selection",
+						labels: selectedLabels,
+						indexes: indexes.map((i) => i + 1),
+						...(text ? { text } : {}),
+				  }
+				: { kind: "freeform", text: text ?? "" };
+		}
+	}
+
+	return null;
 }

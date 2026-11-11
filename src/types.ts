@@ -5,33 +5,57 @@ export interface AskOption {
 	description?: string;
 }
 
-/** Normalized, validated input. Built once per tool call. */
+/** Normalized, validated question. */
 export interface AskConfig {
+	/** Short tab label; only used in a batch. */
+	label?: string;
 	question: string;
 	context?: string;
 	options: AskOption[];
+	allowMultiple: boolean;
 	allowFreeform: boolean;
+}
+
+/** One tool call: a single question or a batch of independent ones. */
+export interface AskRequest {
+	heading?: string;
+	questions: AskConfig[];
 }
 
 export type AskResponse =
-	| { kind: "selection"; labels: string[]; indexes: number[] }
+	| { kind: "selection"; labels: string[]; indexes: number[]; text?: string }
 	| { kind: "freeform"; text: string };
 
-/**
- * Persisted in the tool result. Kept stable on purpose: the UI rebuilds the
- * transcript from it when a session is resumed.
- */
-export interface AskDetails {
-	question: string;
-	context?: string;
-	options: AskOption[];
-	allowFreeform: boolean;
-	response: AskResponse | null;
+/** What the UI (custom component or dialogs) resolves with. */
+export interface AskOutcome {
+	/** Index-aligned with the request questions; null means unanswered. */
+	responses: (AskResponse | null)[];
 	cancelled: boolean;
 }
 
-/** What the interactive UI resolves with before it is turned into details. */
-export type AskUiResult =
-	| { kind: "selection"; label: string; index: number }
-	| { kind: "freeform"; text: string }
-	| null;
+/** Persisted in the tool result. `kind` was added in v2; v1 stored single details without it. */
+export type AskDetails =
+	| {
+			kind: "single";
+			question: string;
+			context?: string;
+			options: AskOption[];
+			allowMultiple: boolean;
+			allowFreeform: boolean;
+			response: AskResponse | null;
+			cancelled: boolean;
+	  }
+	| {
+			kind: "batch";
+			heading?: string;
+			questions: Array<{
+				label: string;
+				question: string;
+				context?: string;
+				options: AskOption[];
+				allowMultiple: boolean;
+				allowFreeform: boolean;
+			}>;
+			answers: (AskResponse | null)[];
+			cancelled: boolean;
+	  };

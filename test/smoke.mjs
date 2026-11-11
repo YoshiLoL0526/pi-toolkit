@@ -30,8 +30,19 @@ const theme = {
 
 const tuiStub = { requestRender() {}, terminal: { rows: 40, columns: 100 } };
 
-const KEYS = { up: "\x1b[A", down: "\x1b[B", enter: "\r", escape: "\x1b", shiftTab: "\x1b[Z" };
-const params = {
+const KEYS = {
+	up: "\x1b[A",
+	down: "\x1b[B",
+	right: "\x1b[C",
+	left: "\x1b[D",
+	enter: "\r",
+	escape: "\x1b",
+	tab: "\t",
+	shiftTab: "\x1b[Z",
+	space: " ",
+};
+
+const singleParams = {
 	question: "Which database should the service use?",
 	context: "Both are supported by the ORM; the service is single-region.",
 	options: [
@@ -59,37 +70,41 @@ async function runTui(inputParams, drive) {
 
 	const pending = tool.execute("call-1", inputParams, undefined, undefined, ctx);
 	const component = factory(tuiStub, theme, {}, resolve);
-	const lines = component.render(64);
-	assert.ok(lines.length > 0);
-	drive(component, lines);
+	component.render(64);
+	const render = () => component.render(64).join("\n");
+	drive(component, render);
 	return pending;
+}
+
+async function runDialogs(inputParams, ui) {
+	const ctx = { hasUI: true, mode: "rpc", ui };
+	return tool.execute("call-rpc", inputParams, undefined, undefined, ctx);
 }
 
 // 1. Arrow navigation + Enter selects an option.
 {
-	const result = await runTui(params, (component) => {
+	const result = await runTui(singleParams, (component) => {
 		component.handleInput(KEYS.down);
 		component.handleInput(KEYS.enter);
 	});
 	assert.equal(result.content[0].text, "User selected: 2. SQLite");
-	assert.equal(result.details.response.kind, "selection");
+	assert.equal(result.details.kind, "single");
 	assert.deepEqual(result.details.response.labels, ["SQLite"]);
 	assert.deepEqual(result.details.response.indexes, [2]);
 	assert.equal(result.details.cancelled, false);
-	assert.equal(result.details.question, params.question);
 }
 
 // 2. Digit quick-pick.
 {
-	const result = await runTui(params, (component) => {
+	const result = await runTui(singleParams, (component) => {
 		component.handleInput("1");
 	});
 	assert.equal(result.content[0].text, "User selected: 1. Postgres");
 }
 
-// 3. Freeform: pick "Type something." (index 3), type, submit with Enter.
+// 3. Freeform: pick "Type something." (row 3), type, submit with Enter.
 {
-	const result = await runTui(params, (component) => {
+	const result = await runTui(singleParams, (component) => {
 		component.handleInput("3");
 		for (const char of "use duckdb") component.handleInput(char);
 		component.handleInput(KEYS.enter);
@@ -100,7 +115,7 @@ async function runTui(inputParams, drive) {
 
 // 4. Escape in the list cancels without re-asking the user.
 {
-	const result = await runTui(params, (component) => {
+	const result = await runTui(singleParams, (component) => {
 		component.handleInput(KEYS.escape);
 	});
 	assert.match(result.content[0].text, /dismissed the question/);
@@ -119,26 +134,26 @@ async function runTui(inputParams, drive) {
 
 // 6. Headless modes do not hang: the model is told to ask in plain text.
 {
-	const result = await tool.execute("call-2", params, undefined, undefined, { hasUI: false, mode: "print", ui: {} });
+	const result = await tool.execute("call-2", singleParams, undefined, undefined, {
+		hasUI: false,
+		mode: "print",
+		ui: {},
+	});
 	assert.match(result.content[0].text, /no interactive UI/);
 	assert.equal(result.details.cancelled, true);
 }
 
 // 7. RPC fallback uses select and maps the choice back to the label.
 {
-	const ctx = {
-		hasUI: true,
-		mode: "rpc",
-		ui: { select: async () => "2. SQLite — No extra infrastructure" },
-	};
-	const result = await tool.execute("call-3", params, undefined, undefined, ctx);
+	const result = await runDialogs(singleParams, {
+		select: async () => "2. SQLite",
+	});
 	assert.equal(result.content[0].text, "User selected: 2. SQLite");
 }
 
-// 8. RPC fallback for freeform cancels when the dialog is dismissed.
+// 8. RPC fallback cancels when the dialog is dismissed.
 {
-	const ctx = { hasUI: true, mode: "rpc", ui: { select: async () => undefined } };
-	const result = await tool.execute("call-3", params, undefined, undefined, ctx);
+	const result = await runDialogs(singleParams, { select: async () => undefined });
 	assert.equal(result.details.cancelled, true);
 }
 
@@ -173,11 +188,206 @@ async function runTui(inputParams, drive) {
 			},
 		},
 	};
-	const pending = tool.execute("call-6", params, controller.signal, undefined, ctx);
+	const pending = tool.execute("call-6", singleParams, controller.signal, undefined, ctx);
 	factory(tuiStub, theme, {}, resolvePrompt);
 	controller.abort();
 	const result = await pending;
 	assert.equal(result.details.cancelled, true);
+}
+
+// 11. Multi-select: space toggles, Enter submits the checked set.
+{
+	const result = await runTui(
+		{
+			question: "Which features should ship?",
+			allowMultiple: true,
+			options: [{ label: "Auth" }, { label: "Billing" }, { label: "Search" }],
+		},
+		(component) => {
+			component.handleInput(KEYS.space);
+			component.handleInput(KEYS.down);
+			component.handleInput(KEYS.down);
+			component.handleInput(KEYS.space);
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.equal(result.content[0].text, "User selected: 1. Auth, 3. Search");
+	assert.deepEqual(result.details.response.indexes, [1, 3]);
+}
+
+// 12. Multi-select with a free-form addition.
+{
+	const result = await runTui(
+		{
+			question: "Which features should ship?",
+			allowMultiple: true,
+			options: [{ label: "Auth" }, { label: "Billing" }],
+		},
+		(component) => {
+			component.handleInput(KEYS.space);
+			component.handleInput("3");
+			for (const char of "ci") component.handleInput(char);
+			component.handleInput(KEYS.enter);
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.equal(result.content[0].text, "User selected: 1. Auth\nUser also wrote: ci");
+	assert.equal(result.details.response.text, "ci");
+}
+
+// 13. Multi-select refuses to submit an empty answer and says so.
+{
+	const result = await runTui(
+		{
+			question: "Which features should ship?",
+			allowMultiple: true,
+			options: [{ label: "Auth" }, { label: "Billing" }],
+		},
+		(component, render) => {
+			component.handleInput(KEYS.enter);
+			assert.match(render(), /Select at least one option/);
+			component.handleInput(KEYS.space);
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.equal(result.content[0].text, "User selected: 1. Auth");
+}
+
+// 14. Batch: answer both questions, land on review, submit.
+{
+	const result = await runTui(
+		{
+			question: "Deploy setup",
+			questions: [
+				{ label: "DB", question: "Which database?", options: [{ label: "Postgres" }, { label: "SQLite" }] },
+				{ label: "Target", question: "Which target?", options: [{ label: "Fly.io" }, { label: "Cloudflare" }] },
+			],
+		},
+		(component) => {
+			component.handleInput(KEYS.enter);
+			component.handleInput("2");
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.equal(result.details.kind, "batch");
+	assert.equal(result.details.answers.length, 2);
+	assert.match(result.content[0].text, /DB\. Which database\?\nAnswer: User selected: 1\. Postgres/);
+	assert.match(result.content[0].text, /Target\. Which target\?\nAnswer: User selected: 2\. Cloudflare/);
+}
+
+// 15. Batch: Enter on review warns once, then submits with the unanswered question skipped.
+{
+	const result = await runTui(
+		{
+			questions: [
+				{ label: "DB", question: "Which database?", options: [{ label: "Postgres" }] },
+				{ label: "Target", question: "Which target?", options: [{ label: "Fly.io" }] },
+			],
+		},
+		(component, render) => {
+			component.handleInput(KEYS.enter);
+			component.handleInput(KEYS.tab);
+			assert.match(render(), /Review your answers/);
+			component.handleInput(KEYS.enter);
+			assert.match(render(), /will be\s+skipped/);
+			component.handleInput(KEYS.enter);
+		},
+	);
+	assert.match(result.content[0].text, /Target\. Which target\?\nAnswer: skipped/);
+	assert.equal(result.details.cancelled, false);
+}
+
+// 16. Batch: Esc cancels every question.
+{
+	const result = await runTui(
+		{
+			questions: [
+				{ question: "Which database?", options: [{ label: "Postgres" }] },
+				{ question: "Which target?", options: [{ label: "Fly.io" }] },
+			],
+		},
+		(component) => {
+			component.handleInput(KEYS.enter);
+			component.handleInput(KEYS.escape);
+		},
+	);
+	assert.equal(result.details.cancelled, true);
+	assert.deepEqual(result.details.answers, [null, null]);
+}
+
+// 17. Review page digits jump back to a question.
+{
+	const result = await runTui(
+		{
+			questions: [
+				{ label: "DB", question: "Which database?", options: [{ label: "Postgres" }] },
+				{ label: "Target", question: "Which target?", options: [{ label: "Fly.io" }] },
+			],
+		},
+		(component, render) => {
+			component.handleInput(KEYS.enter);
+			component.handleInput(KEYS.tab);
+			component.handleInput("1");
+			assert.match(render(), /Which database\?/);
+			component.handleInput(KEYS.escape);
+		},
+	);
+	assert.equal(result.details.cancelled, true);
+}
+
+// 18. RPC multi-select loops until "Done".
+{
+	const answers = ["1. Auth", "Done (1 selected)"];
+	const result = await runDialogs(
+		{ question: "Which features?", allowMultiple: true, options: [{ label: "Auth" }, { label: "Billing" }] },
+		{ select: async () => answers.shift() },
+	);
+	assert.equal(result.content[0].text, "User selected: 1. Auth");
+}
+
+// 19. RPC batch asks every question in order.
+{
+	const answers = ["1. Postgres", "2. Cloudflare"];
+	const result = await runDialogs(
+		{
+			questions: [
+				{ question: "Which database?", options: [{ label: "Postgres" }, { label: "SQLite" }] },
+				{ question: "Which target?", options: [{ label: "Fly.io" }, { label: "Cloudflare" }] },
+			],
+		},
+		{ select: async () => answers.shift() },
+	);
+	assert.match(result.content[0].text, /Answer: User selected: 1\. Postgres/);
+	assert.match(result.content[0].text, /Answer: User selected: 2\. Cloudflare/);
+}
+
+// 20. Renderers work for both detail shapes, including v1 details without `kind`.
+{
+	const text = { fg: (_t, s) => s, bold: (s) => s, bg: (_t, s) => s };
+	assert.ok(tool.renderCall(singleParams, theme).render(80).length);
+	assert.ok(tool.renderCall({ question: "Head", questions: [{ question: "Q?" }] }, theme).render(80).length);
+
+	const single = tool.renderResult(
+		{ content: [{ type: "text", text: "x" }], details: { question: "q", options: [], response: null, cancelled: true } },
+		{},
+		text,
+	);
+	assert.match(single.render(80).join("\n"), /Cancelled/);
+
+	const batch = tool.renderResult(
+		{
+			content: [{ type: "text", text: "x" }],
+			details: {
+				kind: "batch",
+				questions: [{ label: "Q1", question: "q", options: [], allowMultiple: false, allowFreeform: true }],
+				answers: [null],
+				cancelled: false,
+			},
+		},
+		{},
+		text,
+	);
+	assert.match(batch.render(80).join("\n"), /not answered/);
 }
 
 console.log("smoke: all checks passed");
