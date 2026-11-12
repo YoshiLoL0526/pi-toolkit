@@ -1,7 +1,7 @@
 {
   "name": "pi-toolkit",
-  "version": "1.1.0",
-  "description": "A pack of Pi extensions. Ships ask_user (interactive questions with options, multi-select, batches and free-form answers) and notify (terminal notifications when the agent finishes, fails or waits for you).",
+  "version": "1.2.0",
+  "description": "A pack of Pi extensions. Ships ask_user (interactive questions with options, multi-select, batches and free-form answers), notify (terminal notifications when the agent finishes, fails or waits for you) and lively (a live activity line and animated telemetry footer for the TUI).",
   "type": "module",
   "license": "MIT",
   "author": "Raidel Martínez Santos <yoshilol0526@gmail.com>",
@@ -25,6 +25,12 @@
     "interactive",
     "notify",
     "notification",
+    "lively",
+    "tui",
+    "footer",
+    "activity-line",
+    "status-line",
+    "spinner",
     "terminal"
   ],
   "pi": {

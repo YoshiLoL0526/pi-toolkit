@@ -12,6 +12,7 @@ A pack of Pi extensions distributed as one package. Every feature is a separate 
 |---|---|---|
 | [`extensions/ask.ts`](extensions/ask.ts) | `ask_user` | Stops mid-task to ask you a question: pick from a list of options, select several, or write a free-form answer. Several independent questions can be asked together with tabs and a review page |
 | [`extensions/notify.ts`](extensions/notify.ts) | — | Tells you when the agent finished, failed, or is blocked on your answer, using your terminal's own notification protocol, without touching the transcript |
+| [`extensions/lively.ts`](extensions/lively.ts) | — | Gives the TUI a pulse: a live activity line while the agent works, a closing line when it stops, and a footer that animates instead of sitting still |
 
 ### Load only some extensions
 
@@ -153,9 +154,32 @@ Notifications are written only in `tui` mode. `rpc`, `json` and `print` get noth
 | `/notify on` / `/notify off` | Toggle for the rest of the session, without touching the settings file |
 | `/notify test` | Send one notification through the resolved channel, ignoring the switch and the threshold |
 
+## `lively`
+
+No tool and no transcript entries: one line above the editor and an animated footer, so a long run does not look frozen.
+
+| Surface | Where | What it shows |
+|---|---|---|
+| Activity line | One row above the editor, only during a run | `⠹ thinking`, `⠹ responding`, `⠹ preparing tools` or `⠹ waiting for the model`, then the concrete action: `⠹ editing src/schema.ts · 3s`; `? waiting for you` while a prompt is open; `+N` when parallel tools overlap |
+| Closing line | The same row, for `celebrateMs` after the run | `✓ Done in 14s · 4 tools`, `✗ Failed after 6s` or `■ Stopped after 3s`, then cleared |
+| Footer | Replaces the built-in footer | Animated glyph and run clock, `cwd (branch) • session`, tokens/cache hit rate/cost/context, model and thinking level, plus any `setStatus` text from other extensions. It does not repeat the state word |
+
+The timer only runs while the agent works; an idle session redraws nothing. The label follows the real assistant stream: `thinking` only while a thinking block arrives, `responding` for text, `preparing tools` for tool-call deltas, `waiting for the model` before the first delta. Tool names then become verbs (`reading`, `editing`, `running`, `searching`, `fetching`, `waiting for you`) and the target is taken from the call arguments.
+
+While the activity line is visible, `lively` empties Pi's built-in working text and spinner so the same state is not shown twice. `/lively off` or `lively.activity: false` restores Pi's working row; the footer still shows only the pulse, clock and tool count, so exactly one place names the state.
+
+### Command
+
+| Command | Action |
+|---|---|
+| `/lively` or `/lively status` | Show the effective switches and whether they come from the file or the session |
+| `/lively on` / `/lively off` | Toggle every lively surface for the rest of the session |
+
+Settings are read on session and turn boundaries, so editing the file applies without restarting Pi.
+
 ## Configuration
 
-Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call and on every notification, so edits apply without restarting Pi.
+Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, on every notification, and on lively's session and turn boundaries, so edits apply without restarting Pi.
 
 ```json
 {
@@ -166,6 +190,14 @@ Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-tool
     "channel": "auto",
     "minDurationMs": 20000,
     "events": ["done", "input", "error"]
+  },
+  "lively": {
+    "enabled": true,
+    "footer": true,
+    "activity": true,
+    "celebrate": true,
+    "celebrateMs": 4000,
+    "spinner": "braille"
   }
 }
 ```
@@ -178,8 +210,14 @@ Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-tool
 | `notify.channel` | `auto` | `auto`, `osc9`, `osc99`, `osc777`, `toast`, `bell` or `off` |
 | `notify.minDurationMs` | `20000` | Runs shorter than this only notify for `input` and `error` (0-3600000). `/notify test` ignores it |
 | `notify.events` | `["done", "input", "error"]` | Which notifications to send. An unknown name is dropped; an all-invalid list falls back to every event |
+| `lively.enabled` | `true` | Master switch for the activity line, the closing line and the footer |
+| `lively.footer` | `true` | Replace the built-in footer with the animated telemetry footer |
+| `lively.activity` | `true` | Show the live activity line above the editor during a run |
+| `lively.celebrate` | `true` | Keep the closing line visible for `celebrateMs` instead of clearing it immediately |
+| `lively.celebrateMs` | `4000` | Closing-line duration (0-15000 ms); `0` clears immediately |
+| `lively.spinner` | `braille` | `braille`, `dots` or `pulse` |
 
-Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored. The notify extension reports the same error once per session and stays quiet.
+Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored. The notify and lively extensions report the same error once per session and stay quiet.
 
 ## Skill
 
@@ -204,6 +242,8 @@ The extension ships a `promptSnippet` (one line in the tools section) and `promp
 - Filtering and multi-select both index by original option position, so checking options, changing the filter and switching tabs never rewrites an answer.
 - The timeout timer and the abort listener are detached on every exit path, including cancel, timeout, submit and component disposal.
 - `details` is stable and persisted, so the transcript renders correctly when a session is resumed. v1 single details (without `kind`) still render.
+- The activity state machine is pure and lives in `src/lively/state.ts`; the extension only wires events and owns one timer. Token totals are cached per invalidation, never scanned on every animated frame.
+- Every lively surface is guarded by `ctx.mode === "tui"`; the timer stops on settle and shutdown, so an idle session has no background redraw.
 
 ```ts
 type AskDetails =
@@ -243,7 +283,7 @@ Adding an extension: create `extensions/<name>.ts` with a default `export defaul
 
 Project conventions, invariants and the testing contract live in [`AGENTS.md`](AGENTS.md).
 
-The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, plus notification channel detection, payload sanitization, tmux passthrough, toast injection safety, settings clamping and the non-TUI guard, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
+The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, plus notification channel detection, payload sanitization, tmux passthrough, toast injection safety, settings clamping and the non-TUI guard, and the lively state machine, target extraction, footer width, settings clamping and event wiring, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
 
 Real end-to-end check in a non-interactive shell:
 
@@ -258,3 +298,7 @@ pi -e ./extensions/ask.ts --no-builtin-tools --model opencode-go/claude-haiku-5-
 - Notifications are `tui`-only. In `--mode rpc` the client owns its notification UX, and writing escape codes there would corrupt the protocol.
 - Windows toasts need Windows PowerShell 5.1 (`pwsh` has no WinRT projection) and are best effort: a system that blocks the app id fails silently by design. `/notify test` is the way to find out.
 - Detection is a guess from environment variables. A terminal we do not recognise gets `OSC 777`, which unsupported terminals ignore; set `notify.channel` if yours needs something else.
+- The lively footer reproduces the native footer's information but not the `(sub)` subscription cost marker, the experimental-feature marker, or the virtual-model routing arrow. `/lively off` restores the native footer when you need those.
+- A custom footer is a single slot: if another extension also installs one, the last one to run wins. Set `lively.footer` to `false` to leave another footer alone.
+- While `activity` is on, `lively` empties Pi's built-in working message and spinner so there is one state signal. Another extension that customizes that row will be overridden until `lively` is off or `activity` is disabled.
+- The activity line is one row and does not scroll: long targets are truncated in place, and parallel tools are summarized as `+N` rather than listed.

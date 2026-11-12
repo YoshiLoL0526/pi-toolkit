@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0 - 2026-11-11
+
+Adds `lively`: the TUI shows the present, not just the result.
+
+- New extension `extensions/lively.ts` with no tool and no transcript entries. While the agent works, one line above the editor follows the real assistant stream (`thinking`, `responding`, `preparing tools`, `waiting for the model`) and then the concrete action (`⠹ editing src/schema.ts · 3s`). It turns into `? waiting for you` when a prompt blocks the run and summarizes parallel tools as `+N`.
+- While that line is visible, Pi's built-in working text and spinner are emptied, so the same state is not repeated in three places. `/lively off` or `activity: false` restores Pi's working row.
+- When the run settles, the line becomes `✓ Done in 14s · 4 tools` (or `✗ Failed after …` / `■ Stopped after …`) and stays for `celebrateMs` before clearing.
+- The footer is replaced by an animated one that keeps the native information: cwd/branch/session, input/output/cache tokens, cache hit rate, cost, context window with the `(auto)` marker, model and thinking level, plus statuses set by other extensions. It adds the pulse and run clock without repeating the state word.
+- `lively` settings in `pi-toolkit.json`: `enabled`, `footer`, `activity`, `celebrate`, `celebrateMs` (0-15000) and `spinner` (`braille`, `dots`, `pulse`). They are read on session and turn boundaries; a malformed file is reported once and disables the extension.
+- `/lively [on|off|status]` toggles every lively surface for the session and reports whether the switches come from the file or the session.
+- The activity state machine is pure and the animation timer stops on settle and shutdown. Token totals are cached per invalidation, never scanned on every frame, and nothing is installed outside `tui` mode.
+- 6 new smoke checks (42-47) cover the state machine, stream phases, target extraction, footer width, settings clamping, event wiring and the non-TUI guard.
+
+Nothing to do on upgrade. To keep the native footer, set `"lively": { "footer": false }` in `~/.pi/agent/pi-toolkit.json`; to turn the whole feature off, use `/lively off` or `"lively": { "enabled": false }`.
+
 ## 1.1.0 - 2026-11-11
 
 Adds `notify`: the agent tells your terminal when it needs you.

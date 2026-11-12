@@ -9,16 +9,18 @@ one peer-dependency set. Every feature is a separate extension file under `exten
 so a new feature never creates a new repo or a new package — but a user can still load
 just the parts they want (`pi config`, or a `"extensions": [...]` filter in settings).
 
-The pack ships two extensions. `ask_user` blocks the turn so the model can ask the
+The pack ships three extensions. `ask_user` blocks the turn so the model can ask the
 user a question (single, multi-select, batch, free-form). `notify` tells the user
 when the agent finished, failed, or is blocked on an answer, using the terminal's
-own notification protocol.
+own notification protocol. `lively` decorates the TUI: a live activity line, a
+closing line and an animated telemetry footer.
 
 ## Layout
 
 ```
 extensions/ask.ts      extension entrypoint: registers the tool, wires modes, no UI logic
 extensions/notify.ts   lifecycle listeners + /notify command; no tool, no transcript entries
+extensions/lively.ts   lifecycle listeners + /lively command; no tool, no transcript entries
 src/schema.ts          typebox params + normalizeParams(): validation, defaults, hard caps
 src/types.ts           shared shapes (AskRequest / AskOutcome / AskDetails)
 src/config.ts          settings file (<agent-dir>/pi-toolkit.json), shared by every extension
@@ -33,8 +35,14 @@ src/notify/messages.ts the text of each notification
 src/notify/send.ts     delivery with injected IO
 src/notify/settings.ts the `notify` block of the settings file
 src/notify/toast.ts    fire-and-forget Windows toast (PowerShell 5.1)
+src/lively/state.ts    pure activity state machine; no timers, no UI
+src/lively/format.ts   activity/footer lines, spinner frames, duration and token formats
+src/lively/target.ts   tool args -> the short noun shown in the activity line
+src/lively/stats.ts    session token/cost totals, cached per invalidation
+src/lively/settings.ts the `lively` block of the settings file
+src/lively/ui.ts       thin components over the pure renderers
 skills/ask-user/       shipped decision-gate skill
-test/smoke.mjs         the contract: 41 checks driving the extensions without a model
+test/smoke.mjs         the contract: 47 checks driving the extensions without a model
 ```
 
 Data flows one way: `schema` → `AskRequest` → (`ui/question` | `ui/fallback`) → `AskOutcome`
@@ -75,6 +83,19 @@ Each extension stays independent: it may assume Pi's host packages, nothing else
   pins it.
 - **Notifications are best effort and never block.** No `await` on delivery, no throwing
   from a lifecycle handler; a terminal without notifications is not an error.
+- **Animations stop when the work stops.** `lively` runs one timer only while a run is
+  active, clears it on `agent_settled` and `session_shutdown`, and never installs a
+  surface in `rpc`, `json` or `print`. Token totals are cached per invalidation, never
+  scanned on every frame.
+- **Status labels are evidence-based.** The activity line says `thinking` only after a
+  thinking delta, `responding` after text, `preparing tools` after tool-call deltas, and
+  `waiting for the model` as the fallback. Do not reintroduce a guessed label. While the
+  activity line is on, Pi's built-in working message and spinner are emptied so the
+  state is named once.
+- **A replacement footer must not lose the native information.** cwd/branch/session,
+  tokens, cache hit rate, cost, context window with `(auto)`, model/thinking and the
+  `setStatus` texts of other extensions stay visible; `/lively off` restores the native
+  footer when it carries something the replacement does not.
 - **One prompt at a time.** The tool is `executionMode: "sequential"` because two prompts
   would fight for input focus.
 - **Indexes refer to the original option list.** Filtering and multi-select index by
@@ -153,3 +174,11 @@ Never commit a red `npm run check`, and never push a tag that CI has not verifie
   it, and the model may still call `ask_user` from the tool schema alone.
 - Filtering is in-place: every whitespace-separated term must match label + description
   case-insensitively. There is no fuzzy ranking and no scrolling window for long lists.
+- The lively footer reproduces the native footer but not the `(sub)` subscription marker,
+  the experimental-feature marker or the virtual-model routing arrow; `/lively off`
+  restores the native one. A custom footer is a single slot, so if another extension
+  also installs one, the last to run wins.
+- The activity line is one row: long targets are truncated, and parallel tools are
+  summarized as `+N` instead of listed. While it is visible, `lively` empties Pi's
+  built-in working message and spinner so one state signal remains; another extension
+  that customizes that row is overridden until `lively` or `activity` is off.
