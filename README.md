@@ -13,6 +13,7 @@ A pack of Pi extensions distributed as one package. Every feature is a separate 
 | [`extensions/ask.ts`](extensions/ask.ts) | `ask_user` | Stops mid-task to ask you a question: pick from a list of options, select several, or write a free-form answer. Several independent questions can be asked together with tabs and a review page |
 | [`extensions/notify.ts`](extensions/notify.ts) | — | Tells you when the agent finished, failed, or is blocked on your answer, using your terminal's own notification protocol, without touching the transcript |
 | [`extensions/lively.ts`](extensions/lively.ts) | — | Gives the TUI a pulse: a live activity line while the agent works, a closing line when it stops, and a footer that animates instead of sitting still |
+| [`extensions/engineer.ts`](extensions/engineer.ts) | — | Replaces the agent's identity with a senior-engineer orchestrator: frames the request, reads before proposing, scores risk, asks when a fork matters, delegates to subagents with guardrails, and verifies with evidence |
 
 ### Load only some extensions
 
@@ -177,9 +178,40 @@ While the activity line is visible, `lively` empties Pi's built-in working text 
 
 Settings are read on session and turn boundaries, so editing the file applies without restarting Pi.
 
+## `engineer`
+
+No tool and no transcript entries: it shapes the system prompt so the main session behaves like a senior software engineer that orchestrates instead of a generic assistant that types.
+
+Installing the pack turns it on (`role` mode). On every turn it replaces only the identity head of Pi's rendered prompt; the generated tail (`<tools>`, `<rules>`, `<docs>`, project context, skills, cwd) is kept byte-for-byte, so tool guidelines from this pack and from other extensions still reach the model. It is not a new agent and it does not rebuild Pi's prompt.
+
+The charter it installs adds:
+
+| Block | What it asks for |
+|---|---|
+| Operating loop | Frame the request and its acceptance criteria, read the code before proposing, score the risk, decide (act/investigate/ask/delegate), make the smallest diff, run the real check, report verified vs assumed |
+| Risk rubric | Four axes scored 0-2 (blast radius, reversibility, uncertainty, cost of being wrong): 0-2 act, 3-4 a short plan, 5-6 a go/no-go, 7+ explicit confirmation; destructive, publishing, migration and release actions always need confirmation |
+| Ambiguity | Ask only when two readings lead to different implementations; never ask what the repository can answer; state a conservative assumption and continue when it is cheap and reversible |
+| Delegation | The role is the authorization: use subagents for parallel recon, context isolation and fresh review, never for the final edit; one writer per file, briefs with scope and validation, and child summaries are claims verified against artifacts |
+| Standards and evidence | Follow existing patterns, test the failure path, never leave the tree red, no secrets, no commit/push/publish unless asked, and separate verified from assumed |
+
+The delegation and `ask_user` blocks are conditional on those tools being active, so the prompt never names a tool the session cannot call.
+
+### Command
+
+| Command | Action |
+|---|---|
+| `/engineer` or `/engineer status` | Show whether the role is on, where it comes from, the charter file and the detected tools |
+| `/engineer on` / `/engineer off` | Toggle the role for the rest of the session; the next turn uses it |
+| `/engineer show` | Preview the effective charter (the first 1200 characters) |
+| `/engineer init` | Write the effective charter to `<agent-dir>/engineer.md`, where you can edit it; `--force` overwrites an existing file |
+
+To customize, edit `<agent-dir>/engineer.md` (or point `engineer.promptFile` at another file). It replaces the built-in charter verbatim and is read on every turn. `engineer.promptFile` resolves against the agent directory, never the cwd.
+
+If you already use Pi's `SYSTEM.md`, your identity wins: the charter is appended as an `<engineer_role>` section instead of replacing it, and `/engineer status` says so. The same safe path is used when another extension has already replaced the identity.
+
 ## Configuration
 
-Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, on every notification, and on lively's session and turn boundaries, so edits apply without restarting Pi.
+Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-toolkit.json` when `PI_CODING_AGENT_DIR` is set. The file is read on every tool call, on every notification, on lively's session and turn boundaries, and on engineer's turns, so edits apply without restarting Pi.
 
 ```json
 {
@@ -216,8 +248,10 @@ Optional defaults live in `~/.pi/agent/pi-toolkit.json`, or `<agent-dir>/pi-tool
 | `lively.celebrate` | `true` | Keep the closing line visible for `celebrateMs` instead of clearing it immediately |
 | `lively.celebrateMs` | `4000` | Closing-line duration (0-15000 ms); `0` clears immediately |
 | `lively.spinner` | `braille` | `braille`, `dots` or `pulse` |
+| `engineer.enabled` | `true` | Replace the agent identity with the senior-engineer orchestrator charter |
+| `engineer.promptFile` | `engineer.md` | Charter override, relative to the agent directory; a missing file means the built-in charter |
 
-Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored. The notify and lively extensions report the same error once per session and stay quiet.
+Values outside the range are clamped; unknown keys and wrong types are ignored. A file that exists but is not valid JSON fails the tool call with its path, so a typo is visible instead of silently ignored. The notify, lively and engineer extensions report the same error once per session and stay quiet; engineer disables the role until the file is valid.
 
 ## Skill
 
@@ -244,6 +278,9 @@ The extension ships a `promptSnippet` (one line in the tools section) and `promp
 - `details` is stable and persisted, so the transcript renders correctly when a session is resumed. v1 single details (without `kind`) still render.
 - The activity state machine is pure and lives in `src/lively/state.ts`; the extension only wires events and owns one timer. Token totals are cached per invalidation, never scanned on every animated frame.
 - Every lively surface is guarded by `ctx.mode === "tui"`; the timer stops on settle and shutdown, so an idle session has no background redraw.
+- The engineer role is a prompt transform, not a rebuild: `src/engineer/prompt.ts` swaps the known default head and keeps the tail byte-for-byte; an unknown head or a user `SYSTEM.md` is appended, never destroyed.
+- The charter is a pure function of the active tools (`src/engineer/charter.ts`), with no date or cwd, so an unchanged session renders identical text and keeps its prompt cache.
+- `before_agent_start` returns only the transformed prompt; the transcript keeps Pi's structured sections, and the role is recomputed each turn from the current settings and tool loadout.
 
 ```ts
 type AskDetails =
@@ -283,7 +320,7 @@ Adding an extension: create `extensions/<name>.ts` with a default `export defaul
 
 Project conventions, invariants and the testing contract live in [`AGENTS.md`](AGENTS.md).
 
-The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, plus notification channel detection, payload sanitization, tmux passthrough, toast injection safety, settings clamping and the non-TUI guard, and the lively state machine, target extraction, footer width, settings clamping and event wiring, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
+The smoke test covers option selection, digit quick-pick, free-form, multi-select, filtering, batches with review and skip, cancellation, timeouts, settings-file defaults and errors, the packaged skill, open questions, headless mode, the RPC fallback and abort handling, plus notification channel detection, payload sanitization, tmux passthrough, toast injection safety, settings clamping and the non-TUI guard, the lively state machine, target extraction, footer width, settings clamping and event wiring, and the engineer charter, prompt transform, capability detection, settings, lifecycle wiring and command surface, without a model or a terminal. It points `PI_CODING_AGENT_DIR` at a temp directory so your real settings never leak into the run.
 
 Real end-to-end check in a non-interactive shell:
 
@@ -302,3 +339,7 @@ pi -e ./extensions/ask.ts --no-builtin-tools --model opencode-go/claude-haiku-5-
 - A custom footer is a single slot: if another extension also installs one, the last one to run wins. Set `lively.footer` to `false` to leave another footer alone.
 - While `activity` is on, `lively` empties Pi's built-in working message and spinner so there is one state signal. Another extension that customizes that row will be overridden until `lively` is off or `activity` is disabled.
 - The activity line is one row and does not scroll: long targets are truncated in place, and parallel tools are summarized as `+N` rather than listed.
+- `engineer` changes the prompt on the first turn, which is one prompt-cache miss per session; changing the active tool set (for example enabling subagents mid-session) changes the conditional blocks once more.
+- If another extension also forces the system prompt and loads after this one, the last one wins. The role only replaces the identity it knows; anything else is appended.
+- `SYSTEM.md` takes precedence: the charter is appended and the default identity stays.
+- The charter is a behavioral prompt, not a hard policy: it cannot enforce tool permissions or stop a model from ignoring it.

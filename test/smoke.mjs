@@ -6,7 +6,7 @@
  * Run with: node test/smoke.mjs
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createJiti } from "jiti";
@@ -1240,6 +1240,330 @@ const fire = (name, event, ctx) => captured(() => notifyHandlers.get(name)(event
 	assert.match(badNotices[0], /not valid JSON/);
 	await badHandlers.get("session_shutdown")();
 	rmSync(settingsFile);
+}
+
+// ---- engineer -------------------------------------------------------------
+
+const engineerModule = await jiti.import("../extensions/engineer.ts");
+const engineerHandlers = new Map();
+const engineerCommands = new Map();
+engineerModule.default({
+	on: (name, handler) => {
+		engineerHandlers.set(name, handler);
+	},
+	registerCommand: (name, options) => {
+		engineerCommands.set(name, options);
+	},
+});
+
+const { buildCharter, CHARTER_SIGNATURE } = await jiti.import("../src/engineer/charter.ts");
+const { applyRole, detectCapabilities } = await jiti.import("../src/engineer/prompt.ts");
+const { defaultEngineerSettings, loadEngineerSettings, resolvePromptFile } = await jiti.import(
+	"../src/engineer/settings.ts",
+);
+
+const piPreamble =
+	"You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.";
+const piTail = [
+	"<tools>",
+	"- read: Read file contents",
+	"- bash: Execute bash commands",
+	"- ask_user: Ask the user a question with selectable options",
+	"</tools>",
+	"",
+	"<rules>",
+	"- Use bash for file operations like ls, rg, find",
+	"- Use ask_user when a decision changes what you build",
+	"</rules>",
+	"",
+	"<docs>",
+	"Pi documentation: /pi/docs",
+	"</docs>",
+	"",
+	"<project_context>",
+	"<project_instructions path=\"AGENTS.md\">tabs in TS</project_instructions>",
+	"</project_context>",
+	"",
+	"<cwd>",
+	"/home/me/proj",
+	"</cwd>",
+].join("\n");
+const piPrompt = `${piPreamble}\n\n${piTail}`;
+
+function engineerCtx({ mode = "tui", options = {}, withoutOptions = false } = {}) {
+	const notices = [];
+	const statuses = [];
+	const ctx = {
+		mode,
+		hasUI: mode !== "print",
+		cwd: "/home/me/proj",
+		ui: {
+			notify: (message, level) => notices.push({ message, level: level ?? "info" }),
+			setStatus: (id, value) => statuses.push({ id, value }),
+		},
+		...(withoutOptions
+			? {}
+			: {
+					getSystemPromptOptions: () => ({
+						selectedTools: ["read", "bash", "ask_user", "subagent"],
+						hiddenTools: [],
+						cwd: "/home/me/proj",
+						...options,
+					}),
+				}),
+	};
+	return { ctx, notices, statuses };
+}
+
+function engineerEvent(prompt, options = {}) {
+	return {
+		type: "before_agent_start",
+		messageType: "user",
+		prompt: "do it",
+		images: [],
+		systemPrompt: prompt,
+		systemPromptOptions: {
+			selectedTools: ["read", "bash", "ask_user", "subagent"],
+			hiddenTools: [],
+			toolSnippets: { read: "Read file contents" },
+			toolGuidelines: {},
+			promptGuidelines: [],
+			sections: {},
+			appendSystemPrompt: "",
+			cwd: "/home/me/proj",
+			contextFiles: [],
+			skills: [],
+			...options,
+		},
+	};
+}
+
+// 48. The charter is a pure function of capabilities: identical text on every
+// render (a prompt that changes between turns is a cache miss on every request),
+// with no cwd or date leaking into it, and no block naming a tool that is absent.
+{
+	const both = buildCharter({ askUser: true, subagents: true });
+	assert.equal(both, buildCharter({ askUser: true, subagents: true }), "byte-stable");
+	assert.ok(both.startsWith(CHARTER_SIGNATURE));
+	assert.match(both, /ask_user/);
+	assert.match(both, /explicit authorization for delegation/);
+	assert.match(both, /0-2 act/);
+	assert.ok(!/\/home\/|\d{4}-\d{2}-\d{2}/.test(both), "no cwd or date leaks into the prompt");
+
+	const neither = buildCharter({ askUser: false, subagents: false });
+	assert.match(neither, /ask directly and stop/);
+	assert.ok(!neither.includes("ask_user"), "a missing tool is never promised");
+	assert.match(neither, /No delegation tool is active/);
+	assert.match(neither, /never claim to/);
+}
+
+// 49. role mode swaps only the identity head: every generated section survives
+// byte-for-byte. A user-owned identity (SYSTEM.md) or an unknown head is never
+// destroyed, and a second pass cannot duplicate the role block.
+{
+	const charter = buildCharter({ askUser: true, subagents: true });
+	const replaced = applyRole(piPrompt, charter);
+	assert.equal(replaced.applied, "replaced");
+	assert.ok(replaced.prompt.startsWith(CHARTER_SIGNATURE));
+	assert.ok(replaced.prompt.endsWith(piTail), "tools, rules, docs, context and cwd survive intact");
+	assert.ok(!replaced.prompt.includes("You are a coding assistant"));
+	assert.match(replaced.prompt, /<rules>\n- Use bash/);
+	assert.match(replaced.prompt, /<cwd>\n\/home\/me\/proj/);
+
+	const userOwned = applyRole(piPrompt, charter, { userPrompt: true });
+	assert.equal(userOwned.applied, "appended");
+	assert.ok(userOwned.prompt.startsWith(piPrompt), "the user's head is untouched");
+	assert.ok(userOwned.prompt.includes("<engineer_role>"));
+	assert.equal(applyRole(userOwned.prompt, charter).applied, "unchanged", "idempotent");
+
+	const foreign = piPrompt.replace(
+		"You are a coding assistant running inside pi, a coding agent harness.",
+		"You are a pirate.",
+	);
+	const appended = applyRole(foreign, charter);
+	assert.equal(appended.applied, "appended", "an unknown identity is never destroyed");
+	assert.ok(appended.prompt.includes("You are a pirate."));
+
+	const noSections = applyRole(piPreamble, charter);
+	assert.equal(noSections.applied, "replaced");
+	assert.equal(noSections.prompt, charter.trim(), "a bare preamble is fully replaced");
+}
+
+// 50. Capabilities come from the active loadout, not from what is installed: a
+// hidden tool is not callable, and the subagent loader counts as delegation.
+{
+	assert.deepEqual(detectCapabilities(undefined), { askUser: false, subagents: false });
+	assert.deepEqual(detectCapabilities({ selectedTools: ["read", "ask_user", "subagent"] }), {
+		askUser: true,
+		subagents: true,
+	});
+	assert.deepEqual(
+		detectCapabilities({ selectedTools: ["ask_user", "subagent"], hiddenTools: ["ask_user", "subagent"] }),
+		{ askUser: false, subagents: false },
+		"hidden declarations are not callable",
+	);
+	assert.equal(detectCapabilities({ selectedTools: ["subagents_enable"] }).subagents, true);
+	assert.equal(detectCapabilities({ selectedTools: ["subagent_supervisor"] }).subagents, true);
+	assert.equal(detectCapabilities({ selectedTools: ["read", "bash"] }).askUser, false);
+}
+
+// 51. Settings: role mode is on by default, the prompt file resolves against the
+// agent directory (never the cwd), and a malformed file throws with its path so
+// the extension can report it instead of silently ignoring it.
+{
+	rmSync(settingsFile, { force: true });
+	assert.deepEqual(loadEngineerSettings(settingsFile), defaultEngineerSettings());
+	assert.equal(defaultEngineerSettings().enabled, true, "role mode is on by default");
+
+	writeFileSync(settingsFile, JSON.stringify({ engineer: { enabled: false, promptFile: " team/engineer.md " } }));
+	const settings = loadEngineerSettings(settingsFile);
+	assert.equal(settings.enabled, false);
+	assert.equal(resolvePromptFile(settings, agentDir), join(agentDir, "team/engineer.md"));
+	assert.equal(resolvePromptFile({ enabled: true }, agentDir), join(agentDir, "engineer.md"));
+
+	const absolute = join(agentDir, "absolute.md");
+	assert.equal(resolvePromptFile({ enabled: true, promptFile: absolute }, agentDir), absolute);
+	rmSync(settingsFile);
+
+	writeFileSync(settingsFile, "{ nope");
+	assert.throws(() => loadEngineerSettings(settingsFile), /not valid JSON/);
+	rmSync(settingsFile);
+}
+
+// 52. The lifecycle wiring: the handler replaces the head, honours the file
+// switch and the session override, uses a user charter verbatim, falls back on
+// an empty one with a single notice, and appends when SYSTEM.md owns the identity.
+{
+	rmSync(settingsFile, { force: true });
+	rmSync(join(agentDir, "engineer.md"), { force: true });
+	const { ctx, notices, statuses } = engineerCtx();
+	await engineerHandlers.get("session_start")({}, ctx);
+	assert.equal(statuses.at(-1).value, "engineer: role");
+
+	const on = await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx);
+	assert.ok(on.systemPrompt.startsWith(CHARTER_SIGNATURE));
+	assert.ok(on.systemPrompt.endsWith(piTail));
+
+	writeFileSync(settingsFile, JSON.stringify({ engineer: { enabled: false } }));
+	assert.equal(await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx), undefined);
+
+	await engineerCommands.get("engineer").handler("on", ctx);
+	assert.ok((await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx)).systemPrompt);
+	await engineerCommands.get("engineer").handler("off", ctx);
+	assert.equal(await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx), undefined);
+
+	rmSync(settingsFile);
+	await engineerHandlers.get("session_start")({}, ctx);
+
+	writeFileSync(join(agentDir, "engineer.md"), "MY CHARTER\n");
+	const custom = await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx);
+	assert.ok(custom.systemPrompt.startsWith("MY CHARTER"));
+	assert.ok(!notices.some((notice) => notice.level === "error"), "a missing settings file is not an error");
+
+	writeFileSync(join(agentDir, "engineer.md"), "   \n");
+	const fallback = await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx);
+	assert.ok(fallback.systemPrompt.startsWith(CHARTER_SIGNATURE));
+	assert.equal(
+		notices.filter((notice) => notice.level === "error" && /is empty/.test(notice.message)).length,
+		1,
+		"an empty charter is reported once",
+	);
+	rmSync(join(agentDir, "engineer.md"), { force: true });
+
+	const appended = await engineerHandlers.get("before_agent_start")(
+		engineerEvent(piPrompt, { customPrompt: "You are a custom agent." }),
+		ctx,
+	);
+	assert.ok(appended.systemPrompt.startsWith(piPrompt), "SYSTEM.md keeps its identity");
+	assert.match(appended.systemPrompt, /<engineer_role>/);
+}
+
+// 53. A malformed settings file disables the role and is reported once, not on
+// every turn: a broken config must be visible without flooding the transcript.
+{
+	writeFileSync(settingsFile, "{ nope");
+	const { ctx, notices } = engineerCtx();
+	await engineerHandlers.get("session_start")({}, ctx);
+	assert.equal(await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx), undefined);
+	assert.equal(await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx), undefined);
+	assert.equal(notices.filter((notice) => notice.level === "error").length, 1);
+	assert.match(notices[0].message, /not valid JSON/);
+	rmSync(settingsFile);
+}
+
+// 54. The command surface: status names the source and the detected tools, the
+// session override wins over the file, show previews the effective charter, and
+// an unknown action is an error instead of a silent no-op.
+{
+	rmSync(settingsFile, { force: true });
+	rmSync(join(agentDir, "engineer.md"), { force: true });
+	const { ctx, notices, statuses } = engineerCtx();
+	const command = engineerCommands.get("engineer");
+	assert.deepEqual(command.getArgumentCompletions("o").map((item) => item.value), ["on", "off"]);
+	assert.equal(command.getArgumentCompletions("").length, 5);
+
+	await engineerHandlers.get("session_start")({}, ctx);
+	await command.handler("status", ctx);
+	assert.match(notices.at(-1).message, /engineer role on \(settings\)/);
+	assert.match(notices.at(-1).message, /tools: ask_user, subagent/);
+
+	await command.handler("off", ctx);
+	assert.equal(statuses.at(-1).value, "engineer: off");
+	assert.match(notices.at(-1).message, /off for this session/);
+	await command.handler("on", ctx);
+	assert.equal(statuses.at(-1).value, "engineer: role");
+
+	await command.handler("show", ctx);
+	assert.match(notices.at(-1).message, /built-in:/);
+	assert.ok(notices.at(-1).message.includes(CHARTER_SIGNATURE));
+
+	await command.handler("", ctx);
+	assert.match(notices.at(-1).message, /engineer role on/);
+
+	const withSystem = engineerCtx({ options: { customPrompt: "custom" } });
+	await command.handler("status", withSystem.ctx);
+	assert.match(withSystem.notices.at(-1).message, /SYSTEM\.md is set/);
+
+	await command.handler("nonsense", ctx);
+	assert.match(notices.at(-1).message, /unknown action: nonsense/);
+}
+
+// 55. `/engineer init` writes the effective charter, refuses to overwrite it
+// without --force, and the next turn uses the file verbatim. Nothing writes a
+// status line outside tui mode, and a host without prompt options still works.
+{
+	rmSync(settingsFile, { force: true });
+	const file = join(agentDir, "engineer.md");
+	rmSync(file, { force: true });
+	const { ctx, notices } = engineerCtx();
+	const command = engineerCommands.get("engineer");
+
+	await command.handler("init", ctx);
+	assert.ok(existsSync(file));
+	const written = readFileSync(file, "utf8");
+	assert.match(written, /ask_user/);
+	assert.match(written, /explicit authorization for delegation/);
+	assert.match(notices.at(-1).message, /wrote .*engineer\.md/);
+
+	await command.handler("init", ctx);
+	assert.match(notices.at(-1).message, /already exists/);
+
+	writeFileSync(file, "OLD\n");
+	await command.handler("init --force", ctx);
+	assert.ok(readFileSync(file, "utf8").startsWith(CHARTER_SIGNATURE));
+
+	writeFileSync(file, "TEAM CHARTER\n");
+	const result = await engineerHandlers.get("before_agent_start")(engineerEvent(piPrompt), ctx);
+	assert.ok(result.systemPrompt.startsWith("TEAM CHARTER"));
+	rmSync(file, { force: true });
+
+	const rpc = engineerCtx({ mode: "rpc" });
+	await engineerHandlers.get("session_start")({}, rpc.ctx);
+	assert.equal(rpc.statuses.length, 0, "no status writes outside tui");
+
+	const bare = { mode: "print", hasUI: false, cwd: "/x", ui: { notify: () => {}, setStatus: () => {} } };
+	await engineerHandlers.get("session_start")({}, bare);
+	assert.equal(await command.handler("status", bare), undefined, "a host without prompt options still reports");
 }
 
 rmSync(agentDir, { recursive: true, force: true });
