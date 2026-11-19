@@ -9,11 +9,13 @@ one peer-dependency set. Every feature is a separate extension file under `exten
 so a new feature never creates a new repo or a new package — but a user can still load
 just the parts they want (`pi config`, or a `"extensions": [...]` filter in settings).
 
-The pack ships three extensions. `ask_user` blocks the turn so the model can ask the
+The pack ships four extensions. `ask_user` blocks the turn so the model can ask the
 user a question (single, multi-select, batch, free-form). `notify` tells the user
 when the agent finished, failed, or is blocked on an answer, using the terminal's
 own notification protocol. `lively` decorates the TUI: a live activity line, a
-closing line and an animated telemetry footer.
+closing line and an animated telemetry footer. `engineer` replaces the agent identity
+with a senior-engineer orchestrator charter (operating loop, risk rubric, clarification
+and delegation policy) while keeping Pi's generated prompt sections intact.
 
 ## Layout
 
@@ -21,6 +23,7 @@ closing line and an animated telemetry footer.
 extensions/ask.ts      extension entrypoint: registers the tool, wires modes, no UI logic
 extensions/notify.ts   lifecycle listeners + /notify command; no tool, no transcript entries
 extensions/lively.ts   lifecycle listeners + /lively command; no tool, no transcript entries
+extensions/engineer.ts lifecycle: prompt override + /engineer command; no tool, no transcript entries
 src/schema.ts          typebox params + normalizeParams(): validation, defaults, hard caps
 src/types.ts           shared shapes (AskRequest / AskOutcome / AskDetails)
 src/config.ts          settings file (<agent-dir>/pi-toolkit.json), shared by every extension
@@ -41,8 +44,11 @@ src/lively/target.ts   tool args -> the short noun shown in the activity line
 src/lively/stats.ts    session token/cost totals, cached per invalidation
 src/lively/settings.ts the `lively` block of the settings file
 src/lively/ui.ts       thin components over the pure renderers
+src/engineer/charter.ts the role charter, conditional on the active capabilities
+src/engineer/prompt.ts  pure prompt transform: swap the identity head, keep the tail
+src/engineer/settings.ts the `engineer` block of the settings file
 skills/ask-user/       shipped decision-gate skill
-test/smoke.mjs         the contract: 47 checks driving the extensions without a model
+test/smoke.mjs         the contract: 55 checks driving the extensions without a model
 ```
 
 Data flows one way: `schema` → `AskRequest` → (`ui/question` | `ui/fallback`) → `AskOutcome`
@@ -96,6 +102,22 @@ Each extension stays independent: it may assume Pi's host packages, nothing else
   tokens, cache hit rate, cost, context window with `(auto)`, model/thinking and the
   `setStatus` texts of other extensions stay visible; `/lively off` restores the native
   footer when it carries something the replacement does not.
+- **The engineer role replaces identity, not scaffolding.** `role` mode swaps only the
+  head of the rendered prompt; `<tools>`, `<rules>`, `<docs>`, project context, skills and
+  cwd stay byte-for-byte, because rebuilding them drops the guidelines other extensions
+  contribute. A `customPrompt` (the user's `SYSTEM.md`) is never overwritten: the charter
+  is appended, so the user's identity wins.
+- **The engineer charter is byte-stable.** It depends only on the active tools, never on
+  time, cwd or session state, so an unchanged session keeps its prompt cache. A tool
+  loadout change may rewrite the conditional blocks once; that is the only intended
+  one-time miss.
+- **The charter never promises a tool that is not active.** `ask_user` and subagent
+  guidance are conditional on the selected loadout, and hidden tools do not count. A
+  model told to call a tool it does not have produces a failed turn, not orchestration.
+- **The engineer extension is a prompt transform, not a tool.** It registers no tool and
+  writes no transcript entry; the override is recomputed from settings and the current
+  loadout on every `before_agent_start`, and settings are read on every turn like the
+  other extensions. A malformed file disables the role and is reported once per session.
 - **One prompt at a time.** The tool is `executionMode: "sequential"` because two prompts
   would fight for input focus.
 - **Indexes refer to the original option list.** Filtering and multi-select index by
@@ -134,7 +156,9 @@ Each extension stays independent: it may assume Pi's host packages, nothing else
 ## Testing
 
 `npm run check` = `tsc --noEmit` + `node test/smoke.mjs`. It must be green before any
-commit; CI runs exactly this.
+commit; CI runs exactly this. The engineer checks drive the pure charter and prompt
+builders plus the lifecycle handlers with a fake context, so no model and no real
+prompt are needed.
 
 The smoke test is the specification, not a smoke alarm. It loads the extension with
 `jiti`, captures the registered tool and drives the component with raw key sequences —
@@ -145,7 +169,7 @@ Rules for adding checks:
 
 - One numbered block per behavior, with a comment stating the invariant it proves.
 - `runTui(params, drive)` for the custom component, `runDialogs(params, ui)` for RPC,
-  `tool.execute(...)` directly for headless and error cases.
+  and `tool.execute(...)` directly for headless and error cases.
 - Assert user-visible outcomes (rendered text, result content, `details`), not internals.
 - Cover the sad paths: cancel, timeout, abort, invalid input, malformed settings.
 
@@ -182,3 +206,10 @@ Never commit a red `npm run check`, and never push a tag that CI has not verifie
   summarized as `+N` instead of listed. While it is visible, `lively` empties Pi's
   built-in working message and spinner so one state signal remains; another extension
   that customizes that row is overridden until `lively` or `activity` is off.
+- `engineer` changes the system prompt on the first turn, which is one prompt-cache miss
+  per session; a tool-loadout change rewrites its conditional blocks once more.
+- A `SYSTEM.md` or another extension that forces the prompt takes precedence: the charter
+  is appended as `<engineer_role>` instead of replacing it, and an extension loaded after
+  `engineer` that forces the prompt wins outright.
+- The charter is behavioral guidance, not a permission system: it cannot stop a model
+  from ignoring it.

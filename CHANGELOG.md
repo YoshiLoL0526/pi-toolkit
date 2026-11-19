@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.0 - 2026-11-19
+
+Adds `engineer`: the agent works like a senior engineer orchestrating the task, not a generic assistant typing.
+
+- New extension `extensions/engineer.ts` with no tool and no transcript entries. On by default in `role` mode: it replaces only the identity head of Pi's rendered prompt and keeps the generated tail (`<tools>`, `<rules>`, `<docs>`, project context, skills, cwd) byte-for-byte, so guidelines from this pack and from other extensions still reach the model.
+- The charter installs an operating loop (frame, recon, risk, decide, execute, verify, report), a four-axis risk rubric with a go/no-go threshold and hard stops for destructive or publishing actions, an ambiguity policy, delegation rules, engineering standards and an evidence-first reporting style. It is about 750 words.
+- Delegation is part of the role: subagents for parallel recon, context isolation and fresh review, one writer per file, briefs with scope and validation, and child summaries verified against artifacts. The block only appears when a subagent tool is active.
+- `ask_user` guidance is conditional too: one fork question with the evidence and 2-5 options, batched when independent, never for what the repository can answer.
+- `/engineer` (`status`), `on`, `off`, `show` and `init`; `on`/`off` last for the session. `/engineer init` writes the effective charter to `<agent-dir>/engineer.md`, and editing that file replaces the built-in text on the next turn (`--force` overwrites).
+- `engineer` settings in `pi-toolkit.json`: `enabled` (default `true`) and `promptFile` (relative to the agent directory, default `engineer.md`). A malformed file disables the role and is reported once per session.
+- If you already use `SYSTEM.md`, it wins: the charter is appended as `<engineer_role>` instead of replacing your identity, and `/engineer status` says so. An unknown head from another extension is appended too, never destroyed.
+- `engineer: role` appears in the status line while the role is active.
+- 8 new smoke checks (59-66) cover the byte-stable charter and its conditional blocks, the surgical prompt transform (replace, append, idempotent), capability detection with hidden tools, settings and prompt-file resolution, the lifecycle wiring, the malformed-file guard, the command surface and `init`.
+
+Nothing to do on upgrade. To keep Pi's default identity, add `"engineer": { "enabled": false }` to `~/.pi/agent/pi-toolkit.json` or run `/engineer off`. The first turn after enabling pays one prompt-cache miss; an unchanged session then reuses the cached prompt.
+
 ## 1.2.0 - 2026-11-11
 
 Adds `lively`: the TUI shows the present, not just the result.
